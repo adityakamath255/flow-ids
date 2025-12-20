@@ -3,11 +3,10 @@ import time
 
 from scapy.sendrecv import AsyncSniffer
 
-from cicflowmeter.flow_session import FlowSession
-from cicflowmeter.constants import EXPIRED_UPDATE
+from .flow_session import FlowSession
+from .constants import EXPIRED_UPDATE
 import threading
 
-import os
 from pathlib import Path
 
 GC_INTERVAL = 1.0  # seconds (tune as needed)
