@@ -1,30 +1,35 @@
+from typing import Any, Optional
 from queue import Queue, Empty
-import uuid
-from . import cicflowmeter
-import time
 from pathlib import Path
 from threading import Thread, Event
 from dataclasses import dataclass
+import time
+import joblib
+import numpy as np
 
-Flow = dict
-Prediction = float
+from xgboost import XGBClassifier
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+
+from . import cicflowmeter
+
+Flow = dict[str, Any]
+Prediction = dict[str, float]
 
 
 class FlowExtractor:
 
     class CustomWriter:
-        def __init__(self, output_queue: Queue):
-            self.output_queue = output_queue
+        def __init__(self, output_queue: Queue[Flow]):
+            self._output_queue = output_queue
 
-        def write(self, data: dict):
-            data["id"] = uuid.uuid4()
-            self.output_queue.put(data)
+        def write(self, data: Flow):
+            self._output_queue.put(data)
 
     def __init__(
         self,
         interface: str,
         expired_update: int,
-        output_queue: Queue
+        output_queue: Queue[Flow]
     ):
         writer = self.CustomWriter(output_queue)
         self._sniffer, self._session = cicflowmeter.create_sniffer(
@@ -37,8 +42,13 @@ class FlowExtractor:
 
     def start(self):
         self._sniffer.start()
-        # TODO: REPLACE LATER WITH ACTUAL PERMISSION CHECK LOGIC
-        self._sniffer.join(0.1)
+        self._sniffer.join(1.0)
+
+        if not self._sniffer.running:
+            raise RuntimeError(
+                "Packet capture failed to start "
+                "(check permissions and interface name)"
+            )
 
     def stop(self):
         self._sniffer.stop()
@@ -47,12 +57,38 @@ class FlowExtractor:
 
 
 class Classifier:
+    def __init__(
+        self,
+        model: XGBClassifier,
+        scaler: StandardScaler,
+        encoder: LabelEncoder
+    ):
+        self._model = model
+        self._scaler = scaler
+        self._features = scaler.feature_names_in_
+        self._classes = encoder.classes_
+
     @classmethod
     def from_artifacts(cls, model_dir: Path) -> 'Classifier':
-        ...
+        return cls(
+            joblib.load(model_dir / "model.pkl"),
+            joblib.load(model_dir / "scaler.pkl"),
+            joblib.load(model_dir / "encoder.pkl")
+        )
+
+    def _preprocess(self, flow: Flow) -> np.ndarray:
+        values = np.array(
+            [flow.get(feature, 0.0) for feature in self._features],
+            dtype=np.float64
+        )
+        values = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
+        values = values.reshape(1, -1)
+        return self._scaler.transform(values)
 
     def classify(self, flow: Flow) -> Prediction:
-        ...
+        data = self._preprocess(flow)
+        probs = self._model.predict_proba(data)[0]
+        return dict(zip(self._classes, probs))
 
 
 @dataclass
@@ -64,38 +100,56 @@ class ClassifiedFlow:
 class Ids(Thread):
     def __init__(
         self,
+        flow_extractor: FlowExtractor,
+        classifier: Classifier,
+        flow_queue: Queue[Flow],
+        output_queue: Queue[Optional[ClassifiedFlow]],
+        poll_interval: float
+    ):
+        super().__init__(name="Ids")
+        self._flow_extractor = flow_extractor
+        self._classifier = classifier
+        self._flow_queue = flow_queue
+        self._output_queue = output_queue
+        self._poll_interval = poll_interval
+        self._stop_event = Event()
+
+    @classmethod
+    def from_config(
+        cls,
         interface: str,
         expired_update: int,
         model_dir: Path,
-        refresh_rate: float,
-        output_queue: Queue
+        poll_interval: float,
+        output_queue: Queue[Optional[ClassifiedFlow]]
     ):
-        super().__init__(name="Ids")
-        self._flow_queue = Queue()
-        self._flow_extractor = FlowExtractor(
-            interface, 
-            expired_update, 
-            self._flow_queue
+        flow_queue = Queue()
+        return cls(
+            FlowExtractor(interface, expired_update, flow_queue),
+            Classifier.from_artifacts(model_dir),
+            flow_queue,
+            output_queue,
+            poll_interval,
         )
-        self._classifier = Classifier.from_artifacts(model_dir)
-        self._refresh_rate = refresh_rate
-        self._output_queue = output_queue
-        self._stop_event = Event()
 
     def run(self):
-        self._flow_extractor.start()
+        try:
+            self._flow_extractor.start()
 
-        while not self._stop_event.is_set():
-            try:
-                flow = self._flow_queue.get(timeout=self._refresh_rate)
-            except Empty:
-                continue
+            while not self._stop_event.is_set():
+                try:
+                    flow = self._flow_queue.get(timeout=self._poll_interval)
+                except Empty:
+                    continue
 
-            prediction = self._classifier.classify(flow)
-            classified_flow = ClassifiedFlow(flow, prediction)
-            self._output_queue.put(classified_flow)
+                prediction = self._classifier.classify(flow)
+                classified_flow = ClassifiedFlow(flow, prediction)
+                self._output_queue.put(classified_flow)
 
-        self._flow_extractor.stop()
+        finally:
+            self._flow_extractor.stop()
+            self._output_queue.put(None)
 
     def stop(self):
         self._stop_event.set()
+        self.join()
