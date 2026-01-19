@@ -1,19 +1,25 @@
 from queue import Queue
-from src.capture import FlowExtractor
+from src.ids import Ids
 from pprint import pprint
+from pathlib import Path
 
 
 def main():
-    queue = Queue()
-    extractor = FlowExtractor(
-        interface="enp0s20f0u2",
+    output_queue = Queue()
+    ids = Ids.from_config(
+        interface="enp0s20f0u1",
         expired_update=10,
-        output_queue=queue
+        model_dir=Path("models/"),
+        poll_interval=1.0,
+        output_queue=output_queue
     )
-    extractor.start()
+    ids.start()
     while True:
-        x = queue.get()
-        pprint(x)
+        x = output_queue.get()
+        print("FLOW:")
+        pprint(x.flow)
+        print("PREDICTION:")
+        pprint(x.prediction)
 
 
 if __name__ == "__main__":
