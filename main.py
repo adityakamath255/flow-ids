@@ -2,24 +2,32 @@ from queue import Queue
 from src.ids import Ids
 from pprint import pprint
 from pathlib import Path
+import argparse
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("-i", "--interface", help="Live capture interface")
+    group.add_argument("-p", "--pcap", help="Path to pcap file")
+    args = parser.parse_args()
+
     output_queue = Queue()
+
     ids = Ids.from_config(
-        interface="enp0s20f0u1",
-        expired_update=10,
         model_dir=Path("models/"),
-        poll_interval=1.0,
-        output_queue=output_queue
+        output_queue=output_queue,
+        expired_update=10,
+        interface=args.interface,
+        pcap_file=args.pcap
     )
     ids.start()
     while True:
-        x = output_queue.get()
-        print("FLOW:")
-        pprint(x.flow)
-        print("PREDICTION:")
-        pprint(x.prediction)
+        msg = output_queue.get()
+        if msg is None:
+            break
+        else:
+            pprint(msg.prediction)
 
 
 if __name__ == "__main__":
