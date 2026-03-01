@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IDS Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Liberation Mono', monospace; background: #1e1e2e; color: #cdd6f4; }
+
+  header {
+    padding: 16px 24px;
+    background: #181825;
+    border-bottom: 1px solid #313244;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 { font-size: 18px; font-weight: 600; color: #cdd6f4; }
+  #status {
+    font-size: 13px;
+    padding: 4px 12px;
+    border-radius: 12px;
+    background: #1e3a2e;
+    color: #a6e3a1;
+  }
+  #status.disconnected { background: #3a1e2e; color: #f38ba8; }
+
+  .controls {
+    padding: 12px 24px;
+    background: #181825;
+    border-bottom: 1px solid #313244;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .controls label { font-size: 13px; color: #a6adc8; }
+  .controls select {
+    background: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 13px;
+    font-family: 'Liberation Mono', monospace;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    padding: 16px 24px;
+  }
+  .card {
+    background: #181825;
+    border: 1px solid #313244;
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .card h2 {
+    font-size: 14px;
+    font-weight: 500;
+    color: #a6adc8;
+    margin-bottom: 12px;
+  }
+  .card canvas { width: 100% !important; }
+
+  .table-container {
+    margin: 0 24px 24px;
+    background: #181825;
+    border: 1px solid #313244;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .table-container h2 {
+    font-size: 14px;
+    font-weight: 500;
+    color: #a6adc8;
+    padding: 16px 16px 12px;
+  }
+  .table-wrap {
+    max-height: 400px;
+    overflow-y: auto;
+  }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    position: sticky;
+    top: 0;
+    background: #313244;
+    padding: 8px 12px;
+    text-align: left;
+    font-weight: 500;
+    color: #bac2de;
+    border-bottom: 1px solid #45475a;
+  }
+  tbody td {
+    padding: 6px 12px;
+    border-bottom: 1px solid #313244;
+    white-space: nowrap;
+  }
+  tbody tr:hover { background: #313244; }
+  .label-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .table-wrap::-webkit-scrollbar { width: 6px; }
+  .table-wrap::-webkit-scrollbar-track { background: #181825; }
+  .table-wrap::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>IDS Dashboard</h1>
+  <span id="status">Connecting...</span>
+</header>
+
+<div class="controls">
+  <label for="session-select">Session:</label>
+  <select id="session-select">
+    <option value="live">Live</option>
+  </select>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Classification Distribution</h2>
+    <canvas id="dist-chart"></canvas>
+  </div>
+  <div class="card">
+    <h2>Timeline</h2>
+    <canvas id="timeline-chart"></canvas>
+  </div>
+</div>
+
+<div class="table-container">
+  <h2>Events <span id="event-count" style="color:#6c7086"></span></h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Source</th>
+          <th>Destination</th>
+          <th>Protocol</th>
+          <th>Label</th>
+          <th>Confidence</th>
+        </tr>
+      </thead>
+      <tbody id="events-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const LABEL_COLORS = {
+  'Benign':   { bg: '#1e3a2e', fg: '#a6e3a1' },
+  'DDoS':     { bg: '#3a1e2e', fg: '#f38ba8' },
+  'PortScan': { bg: '#3a2e1e', fg: '#f9e2af' },
+  'Bot':      { bg: '#2e1e3a', fg: '#cba6f7' },
+};
+const DEFAULT_COLOR = { bg: '#45475a', fg: '#bac2de' };
+const PROTOCOL_MAP = { 6: 'TCP', 17: 'UDP' };
+const MAX_TABLE_ROWS = 200;
+const TIMELINE_BUCKETS = 30;
+const TIMELINE_BUCKET_SEC = 10;
+
+// --- State ---
+let labelCounts = {};
+let timelineBuckets = []; // [{time, counts: {label: n}}]
+let eventCount = 0;
+let isLive = true;
+
+// --- Charts ---
+const distCtx = document.getElementById('dist-chart').getContext('2d');
+const distChart = new Chart(distCtx, {
+  type: 'bar',
+  data: { labels: [], datasets: [{ data: [], backgroundColor: [] }] },
+  options: {
+    indexAxis: 'y',
+    responsive: true,
+    plugins: { legend: { display: false } },
+    scales: {
+      x: { grid: { color: '#313244' }, ticks: { color: '#a6adc8' } },
+      y: { grid: { display: false }, ticks: { color: '#cdd6f4' } },
+    },
+  },
+});
+
+const timelineCtx = document.getElementById('timeline-chart').getContext('2d');
+const timelineChart = new Chart(timelineCtx, {
+  type: 'line',
+  data: { labels: [], datasets: [] },
+  options: {
+    responsive: true,
+    interaction: { intersect: false, mode: 'index' },
+    plugins: { legend: { labels: { color: '#a6adc8', boxWidth: 12 } } },
+    scales: {
+      x: { grid: { color: '#313244' }, ticks: { color: '#a6adc8', maxTicksLimit: 8 } },
+      y: { grid: { color: '#313244' }, ticks: { color: '#a6adc8' }, beginAtZero: true },
+    },
+  },
+});
+
+// --- Helpers ---
+function getLabelColor(label) {
+  return LABEL_COLORS[label] || DEFAULT_COLOR;
+}
+
+function formatTime(ts) {
+  if (!ts) return '-';
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString();
+}
+
+function bucketKey(ts) {
+  return Math.floor(ts / TIMELINE_BUCKET_SEC) * TIMELINE_BUCKET_SEC;
+}
+
+function updateDistChart() {
+  const sorted = Object.entries(labelCounts).sort((a, b) => b[1] - a[1]);
+  distChart.data.labels = sorted.map(e => e[0]);
+  distChart.data.datasets[0].data = sorted.map(e => e[1]);
+  distChart.data.datasets[0].backgroundColor = sorted.map(e => getLabelColor(e[0]).fg);
+  distChart.update();
+}
+
+function updateTimelineChart() {
+  const allLabels = Object.keys(labelCounts);
+  const labels = timelineBuckets.map(b => {
+    const d = new Date(b.time * 1000);
+    return d.toLocaleTimeString([], { minute: '2-digit', second: '2-digit' });
+  });
+  timelineChart.data.labels = labels;
+  timelineChart.data.datasets = allLabels.map(label => ({
+    label,
+    data: timelineBuckets.map(b => b.counts[label] || 0),
+    borderColor: getLabelColor(label).fg,
+    backgroundColor: 'transparent',
+    tension: 0.3,
+    pointRadius: 0,
+  }));
+  timelineChart.update();
+}
+
+function addEvent(ev) {
+  const pred = ev.prediction || {};
+  const label = Object.entries(pred).reduce((a, b) => b[1] > a[1] ? b : a, ['', 0])[0];
+  const confidence = pred[label] || 0;
+  const flow = ev.flow || {};
+  const ts = flow.timestamp;
+
+  // Update counts
+  labelCounts[label] = (labelCounts[label] || 0) + 1;
+  eventCount++;
+  document.getElementById('event-count').textContent = `(${eventCount})`;
+
+  // Update timeline
+  if (ts) {
+    const key = bucketKey(ts);
+    let bucket = timelineBuckets.find(b => b.time === key);
+    if (!bucket) {
+      bucket = { time: key, counts: {} };
+      timelineBuckets.push(bucket);
+      timelineBuckets.sort((a, b) => a.time - b.time);
+      if (timelineBuckets.length > TIMELINE_BUCKETS) timelineBuckets.shift();
+    }
+    bucket.counts[label] = (bucket.counts[label] || 0) + 1;
+  }
+
+  // Add table row
+  const tbody = document.getElementById('events-body');
+  const color = getLabelColor(label);
+  const proto = PROTOCOL_MAP[flow.protocol] || flow.protocol || '-';
+  const row = document.createElement('tr');
+  row.innerHTML = `
+    <td>${formatTime(ts)}</td>
+    <td>${flow.src_ip || '-'}:${flow.src_port || '-'}</td>
+    <td>${flow.dst_ip || '-'}:${flow.dst_port || '-'}</td>
+    <td>${proto}</td>
+    <td><span class="label-badge" style="background:${color.bg};color:${color.fg}">${label}</span></td>
+    <td>${(confidence * 100).toFixed(1)}%</td>
+  `;
+  tbody.insertBefore(row, tbody.firstChild);
+
+  // Cap rows
+  while (tbody.children.length > MAX_TABLE_ROWS) {
+    tbody.removeChild(tbody.lastChild);
+  }
+}
+
+function clearState() {
+  labelCounts = {};
+  timelineBuckets = [];
+  eventCount = 0;
+  document.getElementById('event-count').textContent = '';
+  document.getElementById('events-body').innerHTML = '';
+  distChart.data.labels = [];
+  distChart.data.datasets[0].data = [];
+  distChart.update();
+  timelineChart.data.labels = [];
+  timelineChart.data.datasets = [];
+  timelineChart.update();
+}
+
+// --- SSE ---
+let evtSource = null;
+
+function connectSSE() {
+  if (evtSource) evtSource.close();
+  const status = document.getElementById('status');
+  evtSource = new EventSource('/api/events');
+
+  evtSource.onopen = () => {
+    status.textContent = 'Live';
+    status.className = '';
+  };
+
+  evtSource.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    addEvent(data);
+    // Batch chart updates
+    if (eventCount % 5 === 0 || eventCount < 10) {
+      updateDistChart();
+      updateTimelineChart();
+    }
+  };
+
+  evtSource.onerror = () => {
+    status.textContent = 'Disconnected';
+    status.className = 'disconnected';
+  };
+}
+
+// --- History ---
+async function loadSessions() {
+  try {
+    const resp = await fetch('/api/sessions');
+    const sessions = await resp.json();
+    const select = document.getElementById('session-select');
+    sessions.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s;
+      opt.textContent = s;
+      select.appendChild(opt);
+    });
+  } catch (e) {
+    // No sessions available
+  }
+}
+
+async function loadHistory(session) {
+  clearState();
+  try {
+    const resp = await fetch(`/api/history?session=${encodeURIComponent(session)}`);
+    const events = await resp.json();
+    events.forEach(ev => addEvent(ev));
+    updateDistChart();
+    updateTimelineChart();
+  } catch (e) {
+    console.error('Failed to load history:', e);
+  }
+}
+
+document.getElementById('session-select').addEventListener('change', (e) => {
+  const val = e.target.value;
+  if (val === 'live') {
+    isLive = true;
+    clearState();
+    connectSSE();
+  } else {
+    isLive = false;
+    if (evtSource) evtSource.close();
+    document.getElementById('status').textContent = 'Historical';
+    document.getElementById('status').className = 'disconnected';
+    loadHistory(val);
+  }
+});
+
+// --- Init ---
+loadSessions();
+connectSSE();
+</script>
+</body>
+</html>

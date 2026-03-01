@@ -1,9 +1,13 @@
-from queue import Queue
-from src.ids import Ids
+from src.dashboard import Dashboard
 from src.logger import FlowLogger
+from src.ids import Ids
+
+from queue import Queue
 from pprint import pprint
 from pathlib import Path
 import argparse
+from threading import Thread
+import uvicorn
 
 
 def main():
@@ -15,6 +19,8 @@ def main():
                         help="Log output directory")
     parser.add_argument("-e", "--expired_update", default=10,
                         help="Expired flow update interval")
+    parser.add_argument("-P", "--port", type=int, default=8000, 
+                        help="Dashboard port")
     args = parser.parse_args()
 
     if args.interface:
@@ -34,7 +40,17 @@ def main():
 
     logger = FlowLogger(Path(args.log_dir), source)
 
+    dashboard = Dashboard(args.log_dir)
+
+    Thread(
+        target=uvicorn.run,
+        args=(dashboard.app,),
+        kwargs={"host": "0.0.0.0", "port": args.port},
+        daemon=True,
+    ).start()
+
     ids.start()
+
     while True:
         msg = output_queue.get()
         if msg is None:
@@ -42,6 +58,7 @@ def main():
         else:
             pprint(msg.prediction)
             logger.log(msg)
+            dashboard.push(msg)
 
 
 if __name__ == "__main__":
