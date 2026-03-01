@@ -1,7 +1,8 @@
 from pathlib import Path
 
-DATASET_DIR = Path("../training-data/MachineLearningCVE")
-OUTPUT_DIR = Path("../models")
+_HERE = Path(__file__).resolve().parent
+DATASET_DIR = _HERE / "../training-data/MachineLearningCVE"
+OUTPUT_DIR = _HERE / "../models"
 RANDOM_STATE = 42
 TEST_SIZE = 0.2
 

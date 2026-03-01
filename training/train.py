@@ -8,7 +8,7 @@ from pathlib import Path
 import joblib
 from datetime import datetime
 
-from config import (
+from .config import (
     DATASET_DIR,
     OUTPUT_DIR,
     FEATURE_MAPPING,
