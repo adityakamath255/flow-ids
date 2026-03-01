@@ -1,4 +1,4 @@
-import csv
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -11,15 +11,14 @@ class FlowLogger:
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         filename = f"{timestamp}-{source}.csv"
         self._file = open(log_dir / filename, "w", newline="")
-        self._writer = csv.writer(self._file)
-        self._header_written = False
 
     def log(self, classified_flow: ClassifiedFlow):
-        row = classified_flow.flow | classified_flow.prediction
-        if not self._header_written:
-            self._writer.writerow(row.keys())
-            self._header_written = True
-        self._writer.writerow(row.values())
+        record = {
+            "flow": classified_flow.flow,
+            "prediction": classified_flow.prediction
+        }
+
+        self._file.write(f"{json.dumps(record)}\n")
         self._file.flush()
 
     def close(self):
