@@ -51,14 +51,18 @@ def main():
 
     ids.start()
 
-    while True:
-        msg = output_queue.get()
-        if msg is None:
-            break
-        else:
-            pprint(msg.prediction)
-            logger.log(msg)
-            dashboard.push(msg)
+    try:
+        while True:
+            msg = output_queue.get()
+            if msg is None:
+                break
+            else:
+                logger.log(msg)
+                dashboard.push(msg)
+    except KeyboardInterrupt:
+        ids.stop()
+    finally:
+        logger.close()
 
 
 if __name__ == "__main__":
