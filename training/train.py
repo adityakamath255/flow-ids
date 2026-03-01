@@ -143,7 +143,8 @@ def evaluate_model(
     print(classification_report(
         y_test,
         y_pred,
-        target_names=encoder.classes_
+        target_names=encoder.classes_,
+        digits=4
     ))
 
 
