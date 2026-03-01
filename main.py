@@ -40,7 +40,7 @@ def main():
 
     logger = FlowLogger(Path(args.log_dir), source)
 
-    dashboard = Dashboard(args.log_dir)
+    dashboard = Dashboard(Path(args.log_dir))
 
     Thread(
         target=uvicorn.run,

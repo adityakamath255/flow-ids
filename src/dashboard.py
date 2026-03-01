@@ -26,10 +26,13 @@ class Dashboard:
         self._register_routes()
 
     def push(self, classified_flow: ClassifiedFlow):
-        data = json.dumps({
-            "flow": classified_flow.flow,
-            "prediction": classified_flow.prediction
-        })
+        data = json.dumps(
+            {
+                "flow": classified_flow.flow,
+                "prediction": classified_flow.prediction
+            },
+            default=float
+        )
 
         if self._loop is None:
             return

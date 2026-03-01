@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>IDS Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><polygon points='50,5 90,25 90,55 50,95 10,55 10,25' fill='%23a6e3a1'/></svg>">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -159,10 +160,11 @@
 
 <script>
 const LABEL_COLORS = {
-  'Benign':   { bg: '#1e3a2e', fg: '#a6e3a1' },
-  'DDoS':     { bg: '#3a1e2e', fg: '#f38ba8' },
-  'PortScan': { bg: '#3a2e1e', fg: '#f9e2af' },
-  'Bot':      { bg: '#2e1e3a', fg: '#cba6f7' },
+  'BENIGN':      { bg: '#1e3a2e', fg: '#a6e3a1' },
+  'DDOS':        { bg: '#3a1e2e', fg: '#f38ba8' },
+  'DOS':         { bg: '#3a1e2e', fg: '#eba0ac' },
+  'BRUTE-FORCE': { bg: '#3a2e1e', fg: '#fab387' },
+  'RECON':       { bg: '#2e1e3a', fg: '#cba6f7' },
 };
 const DEFAULT_COLOR = { bg: '#45475a', fg: '#bac2de' };
 const PROTOCOL_MAP = { 6: 'TCP', 17: 'UDP' };
@@ -174,8 +176,6 @@ const TIMELINE_BUCKET_SEC = 10;
 let labelCounts = {};
 let timelineBuckets = []; // [{time, counts: {label: n}}]
 let eventCount = 0;
-let isLive = true;
-
 // --- Charts ---
 const distCtx = document.getElementById('dist-chart').getContext('2d');
 const distChart = new Chart(distCtx, {
@@ -214,12 +214,13 @@ function getLabelColor(label) {
 
 function formatTime(ts) {
   if (!ts) return '-';
-  const d = new Date(ts * 1000);
-  return d.toLocaleTimeString();
+  return ts.split(' ')[1] || ts;
 }
 
 function bucketKey(ts) {
-  return Math.floor(ts / TIMELINE_BUCKET_SEC) * TIMELINE_BUCKET_SEC;
+  if (!ts) return 0;
+  const epoch = new Date(ts.replace(' ', 'T')).getTime() / 1000;
+  return Math.floor(epoch / TIMELINE_BUCKET_SEC) * TIMELINE_BUCKET_SEC;
 }
 
 function updateDistChart() {
@@ -234,7 +235,9 @@ function updateTimelineChart() {
   const allLabels = Object.keys(labelCounts);
   const labels = timelineBuckets.map(b => {
     const d = new Date(b.time * 1000);
-    return d.toLocaleTimeString([], { minute: '2-digit', second: '2-digit' });
+    const m = String(d.getMinutes()).padStart(2, '0');
+    const s = String(d.getSeconds()).padStart(2, '0');
+    return `${m}:${s}`;
   });
   timelineChart.data.labels = labels;
   timelineChart.data.datasets = allLabels.map(label => ({
@@ -370,11 +373,9 @@ async function loadHistory(session) {
 document.getElementById('session-select').addEventListener('change', (e) => {
   const val = e.target.value;
   if (val === 'live') {
-    isLive = true;
     clearState();
     connectSSE();
   } else {
-    isLive = false;
     if (evtSource) evtSource.close();
     document.getElementById('status').textContent = 'Historical';
     document.getElementById('status').className = 'disconnected';
