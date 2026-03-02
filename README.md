@@ -70,13 +70,13 @@ This is not needed for pcap replay.
 Live capture:
 
 ```bash
-python main.py -i <interface>
+python3 main.py -i <interface>
 ```
 
 Pcap replay:
 
 ```bash
-python main.py -p <file.pcap>
+python3 main.py -p <file.pcap>
 ```
 
 The dashboard runs at `http://localhost:8000`. Past sessions can be viewed from the session dropdown.
@@ -96,7 +96,7 @@ Options:
 Place the CIC-IDS2017 CSV files in `training-data/MachineLearningCVE/`, then:
 
 ```bash
-python -m training.train
+python3 -m training.train
 ```
 
 This writes `model.json`, `scaler.pkl`, and `encoder.pkl` to `models/`. Training configuration (feature selection, class grouping, XGBoost hyperparameters) is in `training/config.py`.

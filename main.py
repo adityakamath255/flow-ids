@@ -1,9 +1,8 @@
 from src.dashboard import Dashboard
 from src.logger import FlowLogger
-from src.ids import Ids
+from src.ids import IDS
 
 from queue import Queue
-from pprint import pprint
 from pathlib import Path
 import argparse
 from threading import Thread
@@ -30,7 +29,7 @@ def main():
 
     output_queue = Queue()
 
-    ids = Ids.from_config(
+    ids = IDS.from_config(
         model_dir=Path("models/"),
         output_queue=output_queue,
         expired_update=args.expired_update,

@@ -16,7 +16,7 @@ class ClassifiedFlow:
     prediction: Prediction
 
 
-class Ids(Thread):
+class IDS(Thread):
     def __init__(
         self,
         flow_extractor: FlowExtractor,
@@ -24,7 +24,7 @@ class Ids(Thread):
         flow_queue: Queue[Flow],
         output_queue: Queue[Optional[ClassifiedFlow]],
     ):
-        super().__init__(name="Ids")
+        super().__init__(name="IDS")
         self._flow_extractor = flow_extractor
         self._classifier = classifier
         self._flow_queue = flow_queue
