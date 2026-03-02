@@ -1,6 +1,6 @@
 from src.dashboard import Dashboard
 from src.logger import FlowLogger
-from src.ids import IDS
+from src.ids import IDS, ClassifiedFlow, IDSFinished
 
 from queue import Queue
 from pathlib import Path
@@ -53,11 +53,12 @@ def main():
     try:
         while True:
             msg = output_queue.get()
-            if msg is None:
-                break
-            else:
-                logger.log(msg)
-                dashboard.push(msg)
+            match msg:
+                case ClassifiedFlow():
+                    logger.log(msg)
+                    dashboard.push(msg)
+                case IDSFinished():
+                    break
     except KeyboardInterrupt:
         ids.stop()
     finally:

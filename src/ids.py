@@ -16,13 +16,18 @@ class ClassifiedFlow:
     prediction: Prediction
 
 
+@dataclass
+class IDSFinished:
+    pass
+
+
 class IDS(Thread):
     def __init__(
         self,
         flow_extractor: FlowExtractor,
         classifier: Classifier,
         flow_queue: Queue[Flow],
-        output_queue: Queue[Optional[ClassifiedFlow]],
+        output_queue: Queue[ClassifiedFlow | IDSFinished],
     ):
         super().__init__(name="IDS")
         self._flow_extractor = flow_extractor
@@ -35,7 +40,7 @@ class IDS(Thread):
     def from_config(
         cls,
         model_dir: Path,
-        output_queue: Queue[Optional[ClassifiedFlow]],
+        output_queue: Queue[ClassifiedFlow | IDSFinished],
         expired_update: int,
         interface: Optional[str],
         pcap_file: Optional[str]
@@ -66,7 +71,7 @@ class IDS(Thread):
 
         finally:
             self._flow_extractor.stop()
-            self._output_queue.put(None)
+            self._output_queue.put(IDSFinished())
 
     def stop(self):
         self._stop_event.set()
