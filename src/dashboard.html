@@ -23,9 +23,8 @@
     font-size: 13px;
     padding: 4px 12px;
     border-radius: 12px;
-    background: #1e3a2e;
-    color: #a6e3a1;
   }
+  #status.connected { background: #1e3a2e; color: #a6e3a1; }
   #status.disconnected { background: #3a1e2e; color: #f38ba8; }
 
   .controls {
@@ -109,16 +108,51 @@
     font-weight: 500;
   }
 
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    padding: 16px 24px 0;
+  }
+  .stat-card {
+    background: #181825;
+    border: 1px solid #313244;
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .stat-card .stat-label {
+    font-size: 12px;
+    color: #a6adc8;
+    margin-bottom: 8px;
+  }
+  .stat-card .stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: #cdd6f4;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-card .stat-sub {
+    font-size: 12px;
+    color: #a6adc8;
+    margin-top: 4px;
+  }
+  .stat-card.threats .stat-value { color: #f38ba8; }
+
   .table-wrap::-webkit-scrollbar { width: 6px; }
   .table-wrap::-webkit-scrollbar-track { background: #181825; }
   .table-wrap::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
+
+  @media (max-width: 1100px) {
+    .stats { grid-template-columns: 1fr; }
+    .grid { grid-template-columns: 1fr; }
+  }
 </style>
 </head>
 <body>
 
 <header>
   <h1>IDS Dashboard</h1>
-  <span id="status">Connecting...</span>
+  <span id="status" class="disconnected">Connecting...</span>
 </header>
 
 <div class="controls">
@@ -126,6 +160,22 @@
   <select id="session-select">
     <option value="live">Live</option>
   </select>
+</div>
+
+<div class="stats">
+  <div class="stat-card">
+    <div class="stat-label">Total Flows</div>
+    <div class="stat-value" id="stat-total">0</div>
+  </div>
+  <div class="stat-card threats">
+    <div class="stat-label">Threats Detected</div>
+    <div class="stat-value" id="stat-threats">0</div>
+    <div class="stat-sub" id="stat-threat-rate">0% of traffic</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-label">Unique Sources</div>
+    <div class="stat-value" id="stat-sources">0</div>
+  </div>
 </div>
 
 <div class="grid">
@@ -174,8 +224,10 @@ const TIMELINE_BUCKET_SEC = 10;
 
 // --- State ---
 let labelCounts = {};
-let timelineBuckets = []; // [{time, counts: {label: n}}]
+let timelineBuckets = [];
 let eventCount = 0;
+let threatCount = 0;
+let uniqueSources = new Set();
 // --- Charts ---
 const distCtx = document.getElementById('dist-chart').getContext('2d');
 const distChart = new Chart(distCtx, {
@@ -213,8 +265,20 @@ function getLabelColor(label) {
 }
 
 function formatTime(ts) {
-  if (!ts) return '-';
+  if (!ts) return '--:--:--';
+  if (ts.includes('T')) {
+    const d = new Date(ts);
+    return d.toLocaleTimeString();
+  }
   return ts.split(' ')[1] || ts;
+}
+
+function updateStats() {
+  document.getElementById('stat-total').textContent = eventCount.toLocaleString();
+  document.getElementById('stat-threats').textContent = threatCount.toLocaleString();
+  const rate = eventCount > 0 ? ((threatCount / eventCount) * 100).toFixed(1) : '0';
+  document.getElementById('stat-threat-rate').textContent = `${rate}% of traffic`;
+  document.getElementById('stat-sources').textContent = uniqueSources.size.toLocaleString();
 }
 
 function bucketKey(ts) {
@@ -253,15 +317,19 @@ function updateTimelineChart() {
 
 function addEvent(ev) {
   const pred = ev.prediction || {};
-  const label = Object.entries(pred).reduce((a, b) => b[1] > a[1] ? b : a, ['', 0])[0];
-  const confidence = pred[label] || 0;
+  const entries = Object.entries(pred);
+  const [label, confidence] = entries.length > 0
+    ? entries.reduce((a, b) => b[1] > a[1] ? b : a)
+    : ['UNKNOWN', 0];
   const flow = ev.flow || {};
   const ts = flow.timestamp;
 
-  // Update counts
   labelCounts[label] = (labelCounts[label] || 0) + 1;
   eventCount++;
-  document.getElementById('event-count').textContent = `(${eventCount})`;
+  if (label !== 'BENIGN') threatCount++;
+  if (flow.src_ip) uniqueSources.add(flow.src_ip);
+
+  document.getElementById('event-count').textContent = `${eventCount} events`;
 
   // Update timeline
   if (ts) {
@@ -301,7 +369,9 @@ function clearState() {
   labelCounts = {};
   timelineBuckets = [];
   eventCount = 0;
-  document.getElementById('event-count').textContent = '';
+  threatCount = 0;
+  uniqueSources = new Set();
+  document.getElementById('event-count').textContent = '0 events';
   document.getElementById('events-body').innerHTML = '';
   distChart.data.labels = [];
   distChart.data.datasets[0].data = [];
@@ -309,10 +379,36 @@ function clearState() {
   timelineChart.data.labels = [];
   timelineChart.data.datasets = [];
   timelineChart.update();
+  updateStats();
 }
 
 // --- SSE ---
 let evtSource = null;
+let viewingLive = true;
+let liveBuffer = [];
+let liveSnapshot = null;
+
+function saveLiveState() {
+  liveSnapshot = {
+    labelCounts: { ...labelCounts },
+    timelineBuckets: timelineBuckets.map(b => ({ time: b.time, counts: { ...b.counts } })),
+    eventCount,
+    threatCount,
+    uniqueSources: new Set(uniqueSources),
+    eventsHTML: document.getElementById('events-body').innerHTML,
+  };
+}
+
+function restoreLiveState() {
+  if (!liveSnapshot) return;
+  labelCounts = liveSnapshot.labelCounts;
+  timelineBuckets = liveSnapshot.timelineBuckets;
+  eventCount = liveSnapshot.eventCount;
+  threatCount = liveSnapshot.threatCount;
+  uniqueSources = liveSnapshot.uniqueSources;
+  document.getElementById('events-body').innerHTML = liveSnapshot.eventsHTML;
+  liveSnapshot = null;
+}
 
 function connectSSE() {
   if (evtSource) evtSource.close();
@@ -320,23 +416,31 @@ function connectSSE() {
   evtSource = new EventSource('/api/events');
 
   evtSource.onopen = () => {
-    status.textContent = 'Live';
-    status.className = '';
+    if (viewingLive) {
+      status.textContent = 'Live';
+      status.className = 'connected';
+    }
   };
 
   evtSource.onmessage = (e) => {
     const data = JSON.parse(e.data);
+    if (!viewingLive) {
+      liveBuffer.push(data);
+      return;
+    }
     addEvent(data);
-    // Batch chart updates
     if (eventCount % 5 === 0 || eventCount < 10) {
       updateDistChart();
       updateTimelineChart();
+      updateStats();
     }
   };
 
   evtSource.onerror = () => {
-    status.textContent = 'Disconnected';
-    status.className = 'disconnected';
+    if (viewingLive) {
+      status.textContent = 'Disconnected';
+      status.className = 'disconnected';
+    }
   };
 }
 
@@ -365,6 +469,7 @@ async function loadHistory(session) {
     events.forEach(ev => addEvent(ev));
     updateDistChart();
     updateTimelineChart();
+    updateStats();
   } catch (e) {
     console.error('Failed to load history:', e);
   }
@@ -373,10 +478,22 @@ async function loadHistory(session) {
 document.getElementById('session-select').addEventListener('change', (e) => {
   const val = e.target.value;
   if (val === 'live') {
-    clearState();
-    connectSSE();
+    viewingLive = true;
+    restoreLiveState();
+    liveBuffer.forEach(data => addEvent(data));
+    liveBuffer = [];
+    updateDistChart();
+    updateTimelineChart();
+    updateStats();
+    document.getElementById('event-count').textContent = `${eventCount} events`;
+    document.getElementById('status').textContent = 'Live';
+    document.getElementById('status').className = 'connected';
   } else {
-    if (evtSource) evtSource.close();
+    if (viewingLive) {
+      saveLiveState();
+      liveBuffer = [];
+      viewingLive = false;
+    }
     document.getElementById('status').textContent = 'Historical';
     document.getElementById('status').className = 'disconnected';
     loadHistory(val);
