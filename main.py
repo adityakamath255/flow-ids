@@ -59,9 +59,8 @@ def main():
                     dashboard.push(msg)
                 case IDSFinished():
                     break
-    except KeyboardInterrupt:
-        ids.stop()
     finally:
+        ids.stop()
         logger.close()
 
 
