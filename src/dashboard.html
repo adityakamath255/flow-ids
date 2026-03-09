@@ -3,8 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>IDS Dashboard</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><polygon points='50,5 90,25 90,55 50,95 10,55 10,25' fill='%23a6e3a1'/></svg>">
+<title>flow-ids</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -46,9 +45,39 @@
     font-family: 'Liberation Mono', monospace;
   }
 
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    padding: 16px 24px 0;
+  }
+  .stat-card {
+    background: #181825;
+    border: 1px solid #313244;
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .stat-card .stat-label {
+    font-size: 12px;
+    color: #a6adc8;
+    margin-bottom: 8px;
+  }
+  .stat-card .stat-value {
+    font-size: 28px;
+    font-weight: 700;
+    color: #cdd6f4;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-card .stat-sub {
+    font-size: 12px;
+    color: #a6adc8;
+    margin-top: 4px;
+  }
+  .stat-card.threats .stat-value { color: #f38ba8; }
+
   .grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 3fr;
     gap: 16px;
     padding: 16px 24px;
   }
@@ -65,6 +94,13 @@
     margin-bottom: 12px;
   }
   .card canvas { width: 100% !important; }
+  .card:has(#dist-chart) {
+    display: grid;
+    grid-template-rows: auto 1fr;
+  }
+  .card:has(#dist-chart) canvas {
+    align-self: center;
+  }
 
   .table-container {
     margin: 0 24px 24px;
@@ -108,56 +144,25 @@
     font-weight: 500;
   }
 
-  .stats {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 16px;
-    padding: 16px 24px 0;
-  }
-  .stat-card {
-    background: #181825;
-    border: 1px solid #313244;
-    border-radius: 8px;
-    padding: 16px;
-  }
-  .stat-card .stat-label {
-    font-size: 12px;
-    color: #a6adc8;
-    margin-bottom: 8px;
-  }
-  .stat-card .stat-value {
-    font-size: 28px;
-    font-weight: 700;
-    color: #cdd6f4;
-    font-variant-numeric: tabular-nums;
-  }
-  .stat-card .stat-sub {
-    font-size: 12px;
-    color: #a6adc8;
-    margin-top: 4px;
-  }
-  .stat-card.threats .stat-value { color: #f38ba8; }
-
   .table-wrap::-webkit-scrollbar { width: 6px; }
   .table-wrap::-webkit-scrollbar-track { background: #181825; }
   .table-wrap::-webkit-scrollbar-thumb { background: #45475a; border-radius: 3px; }
 
   @media (max-width: 1100px) {
     .stats { grid-template-columns: 1fr; }
-    .grid { grid-template-columns: 1fr; }
   }
 </style>
 </head>
 <body>
 
 <header>
-  <h1>IDS Dashboard</h1>
+  <h1>flow-ids</h1>
   <span id="status" class="disconnected">Connecting...</span>
 </header>
 
 <div class="controls">
-  <label for="session-select">Session:</label>
-  <select id="session-select">
+  <label for="source-select">Source:</label>
+  <select id="source-select">
     <option value="live">Live</option>
   </select>
 </div>
@@ -173,8 +178,8 @@
     <div class="stat-sub" id="stat-threat-rate">0% of traffic</div>
   </div>
   <div class="stat-card">
-    <div class="stat-label">Unique Sources</div>
-    <div class="stat-value" id="stat-sources">0</div>
+    <div class="stat-label">Total Bytes</div>
+    <div class="stat-value" id="stat-bytes">0 B</div>
   </div>
 </div>
 
@@ -190,7 +195,7 @@
 </div>
 
 <div class="table-container">
-  <h2>Events <span id="event-count" style="color:#6c7086"></span></h2>
+  <h2>Flows <span id="flow-count" style="color:#6c7086"></span></h2>
   <div class="table-wrap">
     <table>
       <thead>
@@ -203,306 +208,326 @@
           <th>Confidence</th>
         </tr>
       </thead>
-      <tbody id="events-body"></tbody>
+      <tbody id="flow-tbody"></tbody>
     </table>
   </div>
 </div>
 
 <script>
 const LABEL_COLORS = {
-  'BENIGN':      { bg: '#1e3a2e', fg: '#a6e3a1' },
-  'DDOS':        { bg: '#3a1e2e', fg: '#f38ba8' },
-  'DOS':         { bg: '#3a1e2e', fg: '#eba0ac' },
-  'BRUTE-FORCE': { bg: '#3a2e1e', fg: '#fab387' },
-  'RECON':       { bg: '#2e1e3a', fg: '#cba6f7' },
+    "BENIGN":      { bg: "#1e3a2e", fg: "#a6e3a1" },
+    "DDOS":        { bg: "#3a1e2e", fg: "#f38ba8" },
+    "DOS":         { bg: "#3a1e2e", fg: "#eba0ac" },
+    "BRUTE-FORCE": { bg: "#3a2e1e", fg: "#fab387" },
+    "RECON":       { bg: "#2e1e3a", fg: "#cba6f7" },
 };
-const DEFAULT_COLOR = { bg: '#45475a', fg: '#bac2de' };
-const PROTOCOL_MAP = { 6: 'TCP', 17: 'UDP' };
+const DEFAULT_COLOR = { bg: "#45475a", fg: "#bac2de" };
 const MAX_TABLE_ROWS = 200;
 const TIMELINE_BUCKETS = 30;
-const TIMELINE_BUCKET_SEC = 10;
+const TIMELINE_BUCKET_SEC = 5;
+const BYTE_UNITS = ["B", "KB", "MB", "GB"];
 
-// --- State ---
-let labelCounts = {};
-let timelineBuckets = [];
-let eventCount = 0;
+let totalFlows = 0;
+let totalBytes = 0;
 let threatCount = 0;
-let uniqueSources = new Set();
-// --- Charts ---
-const distCtx = document.getElementById('dist-chart').getContext('2d');
-const distChart = new Chart(distCtx, {
-  type: 'bar',
-  data: { labels: [], datasets: [{ data: [], backgroundColor: [] }] },
-  options: {
-    indexAxis: 'y',
-    responsive: true,
-    plugins: { legend: { display: false } },
-    scales: {
-      x: { grid: { color: '#313244' }, ticks: { color: '#a6adc8' } },
-      y: { grid: { display: false }, ticks: { color: '#cdd6f4' } },
-    },
-  },
-});
+let classCounts = {};
+let timelineBuckets = [];
+let sseSource = null;
+let timelineInterval = null;
 
-const timelineCtx = document.getElementById('timeline-chart').getContext('2d');
-const timelineChart = new Chart(timelineCtx, {
-  type: 'line',
-  data: { labels: [], datasets: [] },
-  options: {
-    responsive: true,
-    interaction: { intersect: false, mode: 'index' },
-    plugins: { legend: { labels: { color: '#a6adc8', boxWidth: 12 } } },
-    scales: {
-      x: { grid: { color: '#313244' }, ticks: { color: '#a6adc8', maxTicksLimit: 8 } },
-      y: { grid: { color: '#313244' }, ticks: { color: '#a6adc8' }, beginAtZero: true },
-    },
-  },
-});
+const tbody = document.getElementById("flow-tbody");
+const sourceSelect = document.getElementById("source-select");
+const statusEl = document.getElementById("status");
 
-// --- Helpers ---
 function getLabelColor(label) {
-  return LABEL_COLORS[label] || DEFAULT_COLOR;
+    return LABEL_COLORS[label] || DEFAULT_COLOR;
+}
+
+function formatBytes(bytes) {
+    let i = 0;
+    let value = bytes;
+    while (value >= 1024 && i < BYTE_UNITS.length - 1) {
+        value /= 1024;
+        i++;
+    }
+    const formatted = i === 0 ? value : value.toFixed(1);
+    return formatted + " " + BYTE_UNITS[i];
 }
 
 function formatTime(ts) {
-  if (!ts) return '--:--:--';
-  if (ts.includes('T')) {
-    const d = new Date(ts);
-    return d.toLocaleTimeString();
-  }
-  return ts.split(' ')[1] || ts;
-}
-
-function updateStats() {
-  document.getElementById('stat-total').textContent = eventCount.toLocaleString();
-  document.getElementById('stat-threats').textContent = threatCount.toLocaleString();
-  const rate = eventCount > 0 ? ((threatCount / eventCount) * 100).toFixed(1) : '0';
-  document.getElementById('stat-threat-rate').textContent = `${rate}% of traffic`;
-  document.getElementById('stat-sources').textContent = uniqueSources.size.toLocaleString();
+    if (!ts) return "--:--:--";
+    if (ts.includes("T")) return new Date(ts).toLocaleTimeString();
+    return ts.split(" ")[1] || ts;
 }
 
 function bucketKey(ts) {
-  if (!ts) return 0;
-  const epoch = new Date(ts.replace(' ', 'T')).getTime() / 1000;
-  return Math.floor(epoch / TIMELINE_BUCKET_SEC) * TIMELINE_BUCKET_SEC;
+    const epoch = new Date(ts.replace(" ", "T")).getTime() / 1000;
+    return Math.floor(epoch / TIMELINE_BUCKET_SEC) * TIMELINE_BUCKET_SEC;
+}
+
+// --- Charts ---
+
+const distChart = new Chart(document.getElementById("dist-chart"), {
+    type: "doughnut",
+    data: {
+        labels: [],
+        datasets: [{ data: [], backgroundColor: [] }],
+    },
+    options: {
+        responsive: true,
+        animation: false,
+        plugins: {
+            legend: {
+                position: "bottom",
+                labels: { color: "#a6adc8", boxWidth: 12 },
+            },
+        },
+    },
+});
+
+const timelineChart = new Chart(document.getElementById("timeline-chart"), {
+    type: "line",
+    data: { labels: [], datasets: [] },
+    options: {
+        responsive: true,
+        animation: false,
+        interaction: { intersect: false, mode: "index" },
+        plugins: {
+            legend: { labels: { color: "#a6adc8", boxWidth: 12 } },
+        },
+        scales: {
+            x: {
+                grid: { color: "#313244" },
+                ticks: { color: "#a6adc8", maxTicksLimit: 8 },
+            },
+            y: {
+                grid: { color: "#313244" },
+                ticks: { color: "#a6adc8" },
+                beginAtZero: true,
+            },
+        },
+    },
+});
+
+// --- Stats ---
+
+function updateStats() {
+    document.getElementById("stat-total").textContent =
+        totalFlows.toLocaleString();
+    document.getElementById("stat-threats").textContent =
+        threatCount.toLocaleString();
+    document.getElementById("stat-bytes").textContent =
+        formatBytes(totalBytes);
+
+    const rate = totalFlows > 0
+        ? ((threatCount / totalFlows) * 100).toFixed(1)
+        : "0";
+    document.getElementById("stat-threat-rate").textContent =
+        rate + "% of traffic";
+    document.getElementById("flow-count").textContent =
+        totalFlows + " flows";
 }
 
 function updateDistChart() {
-  const sorted = Object.entries(labelCounts).sort((a, b) => b[1] - a[1]);
-  distChart.data.labels = sorted.map(e => e[0]);
-  distChart.data.datasets[0].data = sorted.map(e => e[1]);
-  distChart.data.datasets[0].backgroundColor = sorted.map(e => getLabelColor(e[0]).fg);
-  distChart.update();
+    const sorted = Object.entries(classCounts).sort((a, b) => b[1] - a[1]);
+    distChart.data.labels = sorted.map(e => e[0]);
+    distChart.data.datasets[0].data = sorted.map(e => e[1]);
+    distChart.data.datasets[0].backgroundColor =
+        sorted.map(e => getLabelColor(e[0]).fg);
+    distChart.update();
 }
 
 function updateTimelineChart() {
-  const allLabels = Object.keys(labelCounts);
-  const labels = timelineBuckets.map(b => {
-    const d = new Date(b.time * 1000);
-    const m = String(d.getMinutes()).padStart(2, '0');
-    const s = String(d.getSeconds()).padStart(2, '0');
-    return `${m}:${s}`;
-  });
-  timelineChart.data.labels = labels;
-  timelineChart.data.datasets = allLabels.map(label => ({
-    label,
-    data: timelineBuckets.map(b => b.counts[label] || 0),
-    borderColor: getLabelColor(label).fg,
-    backgroundColor: 'transparent',
-    tension: 0.3,
-    pointRadius: 0,
-  }));
-  timelineChart.update();
-}
-
-function addEvent(ev) {
-  const pred = ev.prediction || {};
-  const entries = Object.entries(pred);
-  const [label, confidence] = entries.length > 0
-    ? entries.reduce((a, b) => b[1] > a[1] ? b : a)
-    : ['UNKNOWN', 0];
-  const flow = ev.flow || {};
-  const ts = flow.timestamp;
-
-  labelCounts[label] = (labelCounts[label] || 0) + 1;
-  eventCount++;
-  if (label !== 'BENIGN') threatCount++;
-  if (flow.src_ip) uniqueSources.add(flow.src_ip);
-
-  document.getElementById('event-count').textContent = `${eventCount} events`;
-
-  // Update timeline
-  if (ts) {
-    const key = bucketKey(ts);
-    let bucket = timelineBuckets.find(b => b.time === key);
-    if (!bucket) {
-      bucket = { time: key, counts: {} };
-      timelineBuckets.push(bucket);
-      timelineBuckets.sort((a, b) => a.time - b.time);
-      if (timelineBuckets.length > TIMELINE_BUCKETS) timelineBuckets.shift();
-    }
-    bucket.counts[label] = (bucket.counts[label] || 0) + 1;
-  }
-
-  // Add table row
-  const tbody = document.getElementById('events-body');
-  const color = getLabelColor(label);
-  const proto = PROTOCOL_MAP[flow.protocol] || flow.protocol || '-';
-  const row = document.createElement('tr');
-  row.innerHTML = `
-    <td>${formatTime(ts)}</td>
-    <td>${flow.src_ip || '-'}:${flow.src_port || '-'}</td>
-    <td>${flow.dst_ip || '-'}:${flow.dst_port || '-'}</td>
-    <td>${proto}</td>
-    <td><span class="label-badge" style="background:${color.bg};color:${color.fg}">${label}</span></td>
-    <td>${(confidence * 100).toFixed(1)}%</td>
-  `;
-  tbody.insertBefore(row, tbody.firstChild);
-
-  // Cap rows
-  while (tbody.children.length > MAX_TABLE_ROWS) {
-    tbody.removeChild(tbody.lastChild);
-  }
-}
-
-function clearState() {
-  labelCounts = {};
-  timelineBuckets = [];
-  eventCount = 0;
-  threatCount = 0;
-  uniqueSources = new Set();
-  document.getElementById('event-count').textContent = '0 events';
-  document.getElementById('events-body').innerHTML = '';
-  distChart.data.labels = [];
-  distChart.data.datasets[0].data = [];
-  distChart.update();
-  timelineChart.data.labels = [];
-  timelineChart.data.datasets = [];
-  timelineChart.update();
-  updateStats();
-}
-
-// --- SSE ---
-let evtSource = null;
-let viewingLive = true;
-let liveBuffer = [];
-let liveSnapshot = null;
-
-function saveLiveState() {
-  liveSnapshot = {
-    labelCounts: { ...labelCounts },
-    timelineBuckets: timelineBuckets.map(b => ({ time: b.time, counts: { ...b.counts } })),
-    eventCount,
-    threatCount,
-    uniqueSources: new Set(uniqueSources),
-    eventsHTML: document.getElementById('events-body').innerHTML,
-  };
-}
-
-function restoreLiveState() {
-  if (!liveSnapshot) return;
-  labelCounts = liveSnapshot.labelCounts;
-  timelineBuckets = liveSnapshot.timelineBuckets;
-  eventCount = liveSnapshot.eventCount;
-  threatCount = liveSnapshot.threatCount;
-  uniqueSources = liveSnapshot.uniqueSources;
-  document.getElementById('events-body').innerHTML = liveSnapshot.eventsHTML;
-  liveSnapshot = null;
-}
-
-function connectSSE() {
-  if (evtSource) evtSource.close();
-  const status = document.getElementById('status');
-  evtSource = new EventSource('/api/events');
-
-  evtSource.onopen = () => {
-    if (viewingLive) {
-      status.textContent = 'Live';
-      status.className = 'connected';
-    }
-  };
-
-  evtSource.onmessage = (e) => {
-    const data = JSON.parse(e.data);
-    if (!viewingLive) {
-      liveBuffer.push(data);
-      return;
-    }
-    addEvent(data);
-    if (eventCount % 5 === 0 || eventCount < 10) {
-      updateDistChart();
-      updateTimelineChart();
-      updateStats();
-    }
-  };
-
-  evtSource.onerror = () => {
-    if (viewingLive) {
-      status.textContent = 'Disconnected';
-      status.className = 'disconnected';
-    }
-  };
-}
-
-// --- History ---
-async function loadSessions() {
-  try {
-    const resp = await fetch('/api/sessions');
-    const sessions = await resp.json();
-    const select = document.getElementById('session-select');
-    sessions.forEach(s => {
-      const opt = document.createElement('option');
-      opt.value = s;
-      opt.textContent = s;
-      select.appendChild(opt);
+    const allLabels = Object.keys(classCounts);
+    const labels = timelineBuckets.map(b => {
+        const d = new Date(b.time * 1000);
+        const h = String(d.getHours()).padStart(2, "0");
+        const m = String(d.getMinutes()).padStart(2, "0");
+        const s = String(d.getSeconds()).padStart(2, "0");
+        return h + ":" + m + ":" + s;
     });
-  } catch (e) {
-    // No sessions available
-  }
+    timelineChart.data.labels = labels;
+    timelineChart.data.datasets = allLabels.map(label => ({
+        label,
+        data: timelineBuckets.map(b => b.counts[label] || 0),
+        borderColor: getLabelColor(label).fg,
+        backgroundColor: "transparent",
+        tension: 0.3,
+        pointRadius: 0,
+    }));
+    timelineChart.update();
 }
 
-async function loadHistory(session) {
-  clearState();
-  try {
-    const resp = await fetch(`/api/history?session=${encodeURIComponent(session)}`);
-    const events = await resp.json();
-    events.forEach(ev => addEvent(ev));
-    updateDistChart();
-    updateTimelineChart();
-    updateStats();
-  } catch (e) {
-    console.error('Failed to load history:', e);
-  }
-}
+// --- Core ---
 
-document.getElementById('session-select').addEventListener('change', (e) => {
-  const val = e.target.value;
-  if (val === 'live') {
-    viewingLive = true;
-    restoreLiveState();
-    liveBuffer.forEach(data => addEvent(data));
-    liveBuffer = [];
-    updateDistChart();
-    updateTimelineChart();
-    updateStats();
-    document.getElementById('event-count').textContent = `${eventCount} events`;
-    document.getElementById('status').textContent = 'Live';
-    document.getElementById('status').className = 'connected';
-  } else {
-    if (viewingLive) {
-      saveLiveState();
-      liveBuffer = [];
-      viewingLive = false;
+function addFlow(flow) {
+    classCounts[flow.class] = (classCounts[flow.class] || 0) + 1;
+    totalFlows++;
+    totalBytes += flow.bytes;
+    if (flow.class !== "BENIGN") threatCount++;
+
+    if (flow.timestamp) {
+        const key = bucketKey(flow.timestamp);
+        let bucket = timelineBuckets.find(b => b.time === key);
+        if (!bucket) {
+            const last = timelineBuckets.length > 0
+                ? timelineBuckets[timelineBuckets.length - 1].time
+                : key;
+            for (let t = last + TIMELINE_BUCKET_SEC; t < key; t += TIMELINE_BUCKET_SEC) {
+                timelineBuckets.push({ time: t, counts: {} });
+            }
+            bucket = { time: key, counts: {} };
+            timelineBuckets.push(bucket);
+            while (timelineBuckets.length > TIMELINE_BUCKETS) {
+                timelineBuckets.shift();
+            }
+        }
+        bucket.counts[flow.class] = (bucket.counts[flow.class] || 0) + 1;
     }
-    document.getElementById('status').textContent = 'Historical';
-    document.getElementById('status').className = 'disconnected';
-    loadHistory(val);
-  }
-});
+
+    const color = getLabelColor(flow.class);
+    const tr = document.createElement("tr");
+
+    const timeTd = document.createElement("td");
+    timeTd.textContent = formatTime(flow.timestamp);
+    tr.appendChild(timeTd);
+
+    const srcTd = document.createElement("td");
+    srcTd.textContent = flow.src;
+    tr.appendChild(srcTd);
+
+    const dstTd = document.createElement("td");
+    dstTd.textContent = flow.dst;
+    tr.appendChild(dstTd);
+
+    const protoTd = document.createElement("td");
+    protoTd.textContent = flow.protocol;
+    tr.appendChild(protoTd);
+
+    const labelTd = document.createElement("td");
+    const badge = document.createElement("span");
+    badge.className = "label-badge";
+    badge.style.background = color.bg;
+    badge.style.color = color.fg;
+    badge.textContent = flow.class;
+    labelTd.appendChild(badge);
+    tr.appendChild(labelTd);
+
+    const confTd = document.createElement("td");
+    confTd.textContent = (flow.confidence * 100).toFixed(1) + "%";
+    tr.appendChild(confTd);
+
+    tbody.insertBefore(tr, tbody.firstChild);
+
+    while (tbody.children.length > MAX_TABLE_ROWS) {
+        tbody.removeChild(tbody.lastChild);
+    }
+}
+
+// --- Mode switching ---
+
+function clearAll() {
+    totalFlows = 0;
+    totalBytes = 0;
+    threatCount = 0;
+    classCounts = {};
+    timelineBuckets = [];
+    tbody.innerHTML = "";
+    distChart.data.labels = [];
+    distChart.data.datasets[0].data = [];
+    distChart.update();
+    timelineChart.data.labels = [];
+    timelineChart.data.datasets = [];
+    timelineChart.update();
+    updateStats();
+}
+
+function stopLive() {
+    if (sseSource) {
+        sseSource.close();
+        sseSource = null;
+    }
+    if (timelineInterval) {
+        clearInterval(timelineInterval);
+        timelineInterval = null;
+    }
+}
+
+function refreshCharts() {
+    updateDistChart();
+    updateTimelineChart();
+    updateStats();
+}
+
+function startLive() {
+    stopLive();
+    clearAll();
+
+    fetch("/api/snapshot")
+        .then(res => res.json())
+        .then(data => {
+            data.flows.forEach(flow => addFlow(flow));
+            refreshCharts();
+
+            sseSource = new EventSource("/api/flows");
+            sseSource.onopen = () => {
+                statusEl.textContent = "Live";
+                statusEl.className = "connected";
+            };
+            sseSource.onmessage = (event) => {
+                const flow = JSON.parse(event.data);
+                addFlow(flow);
+                refreshCharts();
+            };
+            sseSource.onerror = () => {
+                statusEl.textContent = "Disconnected";
+                statusEl.className = "disconnected";
+            };
+
+            timelineInterval = setInterval(
+                updateTimelineChart,
+                TIMELINE_BUCKET_SEC * 1000
+            );
+        });
+}
+
+function loadLog(filename) {
+    stopLive();
+    clearAll();
+    statusEl.textContent = "Log";
+    statusEl.className = "disconnected";
+
+    fetch("/api/logs/" + filename)
+        .then(res => res.json())
+        .then(flows => {
+            flows.forEach(flow => addFlow(flow));
+            refreshCharts();
+        });
+}
 
 // --- Init ---
-loadSessions();
-connectSSE();
+
+fetch("/api/logs")
+    .then(res => res.json())
+    .then(files => {
+        for (const file of files) {
+            const option = document.createElement("option");
+            option.value = file;
+            option.textContent = file;
+            sourceSelect.appendChild(option);
+        }
+    });
+
+sourceSelect.addEventListener("change", () => {
+    const value = sourceSelect.value;
+    if (value === "live") {
+        startLive();
+    } else {
+        loadLog(value);
+    }
+});
+
+startLive();
 </script>
 </body>
 </html>
