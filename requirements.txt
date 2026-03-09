@@ -1,0 +1,10 @@
+scapy
+xgboost
+scikit-learn
+numpy
+pandas
+scipy
+fastapi
+uvicorn
+sse-starlette
+requests
