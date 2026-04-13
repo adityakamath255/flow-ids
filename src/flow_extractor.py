@@ -1,18 +1,16 @@
-from typing import Any, Optional
+from typing import Optional, Any
 from types import SimpleNamespace
 from queue import Queue
 import time
 
 from . import cicflowmeter
 
-Flow = dict[str, Any]
-
 
 class FlowExtractor:
     def __init__(
         self,
         expired_update: int,
-        output_queue: Queue[Flow],
+        output_queue: Queue[dict[str, Any]],
         interface: Optional[str],
         pcap_file: Optional[str]
     ):

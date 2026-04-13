@@ -4,10 +4,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-
-from .flow_extractor import Flow
-
-Prediction = dict[str, float]
+from typing import Any
 
 
 class Classifier:
@@ -30,7 +27,7 @@ class Classifier:
         encoder = joblib.load(model_dir / "encoder.pkl")
         return cls(model, scaler, encoder)
 
-    def _preprocess(self, flow: Flow) -> np.ndarray:
+    def _preprocess(self, flow: dict) -> np.ndarray:
         values = np.array(
             [flow.get(feature, 0.0) for feature in self._features],
             dtype=np.float64
@@ -39,7 +36,7 @@ class Classifier:
         df = pd.DataFrame([values], columns=self._features)
         return self._scaler.transform(df)
 
-    def classify(self, flow: Flow) -> Prediction:
+    def classify(self, flow: dict[str, Any]) -> dict[str, float]:
         data = self._preprocess(flow)
         probs = self._model.predict_proba(data)[0]
         return dict(zip(self._classes, probs))

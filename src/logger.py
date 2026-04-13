@@ -1,4 +1,5 @@
 import json
+from typing import Any
 from datetime import datetime
 from pathlib import Path
 
@@ -10,7 +11,7 @@ class FlowLogger:
         filename = f"{timestamp}-{source}.jsonl"
         self._file = open(log_dir / filename, "w", newline="")
 
-    def log(self, flow: dict, prediction: dict):
+    def log(self, flow: dict[str, Any], prediction: dict[str, float]):
         record = {"flow": flow, "prediction": prediction}
         obj = json.dumps(record, default=float)
         self._file.write(f"{obj}\n")
