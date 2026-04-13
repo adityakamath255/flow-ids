@@ -3,7 +3,6 @@
 *.pkl
 logs/
 models/
-scripts/
 training-data/
 .claude/
 .serena/
