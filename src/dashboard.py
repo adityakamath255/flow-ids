@@ -7,8 +7,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from sse_starlette.sse import EventSourceResponse
 
-from .ids import ClassifiedFlow
-
 PROTOCOL_NAMES = {6: "TCP", 17: "UDP"}
 
 
@@ -17,9 +15,7 @@ def _load_html() -> str:
     return path.read_text()
 
 
-def _flow_to_event(classified_flow: ClassifiedFlow) -> dict:
-    flow = classified_flow.flow
-    prediction = classified_flow.prediction
+def _flow_to_event(flow: dict, prediction: dict) -> dict:
     predicted_class = max(prediction, key=prediction.get)
     confidence = prediction[predicted_class]
 
@@ -74,8 +70,8 @@ class Dashboard:
         self._stats = _Stats()
         self.app = self._create_app()
 
-    def push(self, classified_flow: ClassifiedFlow):
-        event = _flow_to_event(classified_flow)
+    def push(self, flow: dict, prediction: dict):
+        event = _flow_to_event(flow, prediction)
         self._stats.record(event)
         with self._clients_lock:
             for client in self._clients:
@@ -115,7 +111,7 @@ class Dashboard:
                 )
                 flows = [
                     _flow_to_event(
-                        ClassifiedFlow(record["flow"], record["prediction"])
+                        record["flow"], record["prediction"]
                     )
                     for record in records
                 ]

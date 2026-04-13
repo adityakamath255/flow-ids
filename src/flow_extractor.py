@@ -1,4 +1,5 @@
 from typing import Any, Optional
+from types import SimpleNamespace
 from queue import Queue
 import time
 
@@ -8,14 +9,6 @@ Flow = dict[str, Any]
 
 
 class FlowExtractor:
-
-    class CustomWriter:
-        def __init__(self, output_queue: Queue[Flow]):
-            self._output_queue = output_queue
-
-        def write(self, data: Flow):
-            self._output_queue.put(data)
-
     def __init__(
         self,
         expired_update: int,
@@ -23,7 +16,7 @@ class FlowExtractor:
         interface: Optional[str],
         pcap_file: Optional[str]
     ):
-        writer = self.CustomWriter(output_queue)
+        writer = SimpleNamespace(write=output_queue.get)
         self._sniffer, self._session = cicflowmeter.create_sniffer(
             input_file=pcap_file,
             input_interface=interface,

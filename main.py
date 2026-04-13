@@ -1,8 +1,9 @@
+from src.flow_extractor import FlowExtractor
+from src.classifier import Classifier
 from src.dashboard import Dashboard
 from src.logger import FlowLogger
-from src.ids import IDS, ClassifiedFlow, IDSFinished
 
-from queue import Queue
+from queue import Queue, Empty
 from pathlib import Path
 import argparse
 from threading import Thread
@@ -22,23 +23,14 @@ def main():
                         help="Dashboard port")
     args = parser.parse_args()
 
-    if args.interface:
-        source = args.interface
-    else:
-        source = Path(args.pcap).stem
+    source = args.interface if args.interface else Path(args.pcap).stem
+    flow_queue = Queue()
 
-    output_queue = Queue()
-
-    ids = IDS.from_config(
-        model_dir=Path("models/"),
-        output_queue=output_queue,
-        expired_update=args.expired_update,
-        interface=args.interface,
-        pcap_file=args.pcap
+    flow_extractor = FlowExtractor(
+        args.expired_update, flow_queue, args.interface, args.pcap
     )
-
+    classifier = Classifier.from_artifacts(Path("models/"))
     logger = FlowLogger(Path(args.log_dir), source)
-
     dashboard = Dashboard(Path(args.log_dir))
 
     Thread(
@@ -48,21 +40,25 @@ def main():
         daemon=True,
     ).start()
 
-    ids.start()
+    flow_extractor.start()
 
     try:
         while True:
-            msg = output_queue.get()
-            match msg:
-                case ClassifiedFlow():
-                    logger.log(msg)
-                    dashboard.push(msg)
-                case IDSFinished():
+            try:
+                flow = flow_queue.get(timeout=1.0)
+            except Empty:
+                if flow_extractor.is_done():
                     break
+                continue
+            prediction = classifier.classify(flow)
+            logger.log(flow, prediction)
+            dashboard.push(flow, prediction)
+
     except KeyboardInterrupt:
         pass
+
     finally:
-        ids.stop()
+        flow_extractor.stop()
         logger.close()
 
 

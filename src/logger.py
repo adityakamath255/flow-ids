@@ -2,8 +2,6 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from .ids import ClassifiedFlow
-
 
 class FlowLogger:
     def __init__(self, log_dir: Path, source: str):
@@ -12,12 +10,8 @@ class FlowLogger:
         filename = f"{timestamp}-{source}.jsonl"
         self._file = open(log_dir / filename, "w", newline="")
 
-    def log(self, classified_flow: ClassifiedFlow):
-        record = {
-            "flow": classified_flow.flow,
-            "prediction": classified_flow.prediction
-        }
-
+    def log(self, flow: dict, prediction: dict):
+        record = {"flow": flow, "prediction": prediction}
         obj = json.dumps(record, default=float)
         self._file.write(f"{obj}\n")
         self._file.flush()
