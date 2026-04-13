@@ -36,43 +36,17 @@ def _flow_to_event(flow: dict, prediction: dict) -> dict:
     }
 
 
-class _Stats:
-    def __init__(self):
-        self._lock = Lock()
-        self._total_flows = 0
-        self._total_bytes = 0
-        self._classes: dict[str, int] = {}
-        self._flows: list[dict] = []
-
-    def record(self, event: dict):
-        with self._lock:
-            self._total_flows += 1
-            cls = event["class"]
-            self._classes[cls] = self._classes.get(cls, 0) + 1
-            self._total_bytes += event["bytes"]
-            self._flows.append(event)
-
-    def snapshot(self) -> dict:
-        with self._lock:
-            return {
-                "flows": list(self._flows),
-                "total_flows": self._total_flows,
-                "total_bytes": self._total_bytes,
-                "classes": dict(self._classes),
-            }
-
-
 class Dashboard:
     def __init__(self, log_dir: Path):
         self._log_dir = log_dir
         self._clients: list[Queue[dict]] = []
         self._clients_lock = Lock()
-        self._stats = _Stats()
+        self._flows: list[dict] = []
         self.app = self._create_app()
 
     def push(self, flow: dict, prediction: dict):
         event = _flow_to_event(flow, prediction)
-        self._stats.record(event)
+        self._flows.append(event)
         with self._clients_lock:
             for client in self._clients:
                 client.put(event)
@@ -91,7 +65,7 @@ class Dashboard:
 
         @app.get("/api/snapshot")
         def get_snapshot():
-            return self._stats.snapshot()
+            return {"flows": list(self._flows)}
 
         @app.get("/api/logs")
         def list_logs():

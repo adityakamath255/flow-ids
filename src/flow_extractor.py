@@ -16,7 +16,7 @@ class FlowExtractor:
         interface: Optional[str],
         pcap_file: Optional[str]
     ):
-        writer = SimpleNamespace(write=output_queue.get)
+        writer = SimpleNamespace(write=output_queue.put)
         self._sniffer, self._session = cicflowmeter.create_sniffer(
             input_file=pcap_file,
             input_interface=interface,
