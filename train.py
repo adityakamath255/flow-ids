@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import train_test_split
 import xgboost as xgb
 from sklearn.metrics import classification_report
@@ -13,21 +13,6 @@ DATASET_DIR = HERE / "training-data/MachineLearningCVE"
 OUTPUT_DIR = HERE / "models"
 RANDOM_STATE = 42
 TEST_SIZE = 0.2
-
-CORRELATION_DROP = [
-    'subflow_fwd_pkts', 'subflow_fwd_byts', 'subflow_bwd_pkts', 'subflow_bwd_byts',
-    'fwd_seg_size_avg', 'bwd_seg_size_avg', 'fwd_header_len.1',
-    'syn_flag_cnt', 'cwr_flag_count', 'ece_flag_cnt',
-    'tot_bwd_pkts', 'fwd_iat_tot', 'bwd_iat_tot',
-    'fwd_iat_min', 'bwd_iat_min', 'fwd_iat_mean', 'bwd_iat_mean', 'fwd_iat_max',
-    'idle_max', 'idle_min', 'fwd_pkts_s', 'pkt_size_avg'
-]
-
-ZERO_VARIANCE_DROP = [
-    'bwd_psh_flags', 'bwd_urg_flags',
-    'fwd_byts_b_avg', 'fwd_pkts_b_avg', 'fwd_blk_rate_avg',
-    'bwd_byts_b_avg', 'bwd_pkts_b_avg', 'bwd_blk_rate_avg'
-]
 
 # drop web attacks and advanced exploits
 CLASS_GROUPS = {
@@ -138,7 +123,7 @@ def load_data():
     dfs = (
         pd.read_csv(f, encoding="utf-8", encoding_errors="replace")
         for f in csv_files
-        if f != "Thursday-WorkingHours-Afternoon-Infilteration.pcap_ISCX.csv"
+        if f.name != "Thursday-WorkingHours-Afternoon-Infilteration.pcap_ISCX.csv"
         # mostly duplicate data, based on the lycos analysis
     )
 
@@ -148,28 +133,12 @@ def load_data():
 
 
 def clean_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
-    df = (
-        df
-        .drop_duplicates()
-        .rename(columns=FEATURE_MAPPING)
-    )
+    df = df.drop_duplicates().rename(columns=FEATURE_MAPPING)
 
-    X = (
-        df
-        .drop(columns=["Label"])
-        .replace([np.inf, -np.inf], np.nan)
-        .fillna(0)
+    return (
+        df.drop(columns=["Label"]).replace([np.inf, -np.inf], np.nan),
+        df["Label"].str.strip().str.upper()
     )
-
-    y = (
-        df["Label"]
-        .str
-        .strip()
-        .str
-        .upper()
-    )
-
-    return X, y
 
 
 def group_classes(
@@ -186,13 +155,6 @@ def group_classes(
     return X, y
 
 
-def select_features(X: pd.DataFrame) -> pd.DataFrame:
-    return X.drop(
-        columns=CORRELATION_DROP + ZERO_VARIANCE_DROP, 
-        errors="ignore"
-    )
-
-
 def split_data(
     X: pd.DataFrame, 
     y: pd.Series
@@ -203,25 +165,6 @@ def split_data(
         random_state=RANDOM_STATE,
         stratify=y
     )
-
-
-def scale_features(
-    X_train: pd.DataFrame,
-    X_test: pd.DataFrame
-) -> tuple[pd.DataFrame, pd.DataFrame, StandardScaler]:
-    scaler = StandardScaler()
-
-    X_train_scaled = pd.DataFrame(
-        scaler.fit_transform(X_train),
-        columns=X_train.columns
-    )
-
-    X_test_scaled = pd.DataFrame(
-        scaler.transform(X_test),
-        columns=X_test.columns
-    )
-
-    return X_train_scaled, X_test_scaled, scaler
 
 
 def encode_labels(
@@ -237,7 +180,7 @@ def encode_labels(
 
 def train_xgboost(
     X_train: pd.DataFrame,
-    y_train: pd.Series,
+    y_train: np.ndarray,
 ) -> xgb.XGBClassifier:
     model = xgb.XGBClassifier(**XGBOOST_PARAMS)
     model.fit(X_train, y_train)
@@ -247,7 +190,7 @@ def train_xgboost(
 def evaluate_model(
     model: xgb.XGBClassifier,
     X_test: pd.DataFrame,
-    y_test: pd.Series,
+    y_test: np.ndarray,
     encoder: LabelEncoder
 ):
     y_pred = model.predict(X_test)
@@ -261,13 +204,11 @@ def evaluate_model(
 
 def save_artifacts(
     model: xgb.XGBClassifier,
-    scaler: StandardScaler,
     encoder: LabelEncoder,
     output_dir: Path
 ):
     output_dir.mkdir(parents=True, exist_ok=True)
     model.save_model(output_dir / "model.json")
-    joblib.dump(scaler, output_dir / "scaler.pkl")
     joblib.dump(encoder, output_dir / "encoder.pkl")
 
 
@@ -284,26 +225,20 @@ def main():
     log("Grouping classes...")
     X, y = group_classes(X, y)
 
-    log("Selecting features...")
-    X = select_features(X)
-
     log("Splitting data...")
     X_train, X_test, y_train, y_test = split_data(X, y)
-
-    log("Scaling data...")
-    X_train_scaled, X_test_scaled, scaler = scale_features(X_train, X_test)
 
     log("Encoding labels...")
     y_train_encoded, y_test_encoded, encoder = encode_labels(y_train, y_test)
 
     log("Training model...")
-    model = train_xgboost(X_train_scaled, y_train_encoded)
+    model = train_xgboost(X_train, y_train_encoded)
 
     log("Evaluating model...")
-    evaluate_model(model, X_test_scaled, y_test_encoded, encoder)
+    evaluate_model(model, X_test, y_test_encoded, encoder)
 
     log("Saving artifacts...")
-    save_artifacts(model, scaler, encoder, OUTPUT_DIR)
+    save_artifacts(model, encoder, OUTPUT_DIR)
 
     log("Pipeline complete!")
 

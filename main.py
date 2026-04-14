@@ -10,9 +10,8 @@ from threading import Thread, Lock
 import argparse
 
 import numpy as np
-import pandas as pd
 from xgboost import XGBClassifier
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import LabelEncoder
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -91,30 +90,26 @@ class Classifier:
     def __init__(
         self,
         model: XGBClassifier,
-        scaler: StandardScaler,
         encoder: LabelEncoder
     ):
         self._model = model
-        self._scaler = scaler
-        self._features = scaler.feature_names_in_
+        self._features = model.get_booster().feature_names
         self._classes = encoder.classes_
 
     @classmethod
     def from_artifacts(cls, model_dir: Path) -> 'Classifier':
         model = XGBClassifier()
         model.load_model(str(model_dir / "model.json"))
-        scaler = joblib.load(model_dir / "scaler.pkl")
         encoder = joblib.load(model_dir / "encoder.pkl")
-        return cls(model, scaler, encoder)
+        return cls(model, encoder)
 
     def _preprocess(self, flow: Flow) -> np.ndarray:
         values = np.array(
-            [flow.get(feature, 0.0) for feature in self._features],
+            [flow.get(feature, np.nan) for feature in self._features],
             dtype=np.float64
         )
-        values = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
-        df = pd.DataFrame([values], columns=self._features)
-        return self._scaler.transform(df)
+        values = np.where(np.isinf(values), np.nan, values)
+        return values.reshape(1, -1)
 
     def classify(self, flow: Flow) -> Prediction:
         data = self._preprocess(flow)
