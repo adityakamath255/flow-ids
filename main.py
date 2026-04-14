@@ -1,18 +1,18 @@
+from dataclasses import dataclass
 from queue import Queue, Empty
-from typing import Optional, Any
+from typing import Optional, Any, TextIO
 from types import SimpleNamespace
-from xgboost import XGBClassifier
-from sklearn.preprocessing import StandardScaler, LabelEncoder
 from pathlib import Path
 import joblib
-import numpy as np
-import pandas as pd
 import json
 from datetime import datetime
 from threading import Thread, Lock
-import time
 import argparse
 
+import numpy as np
+import pandas as pd
+from xgboost import XGBClassifier
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -20,18 +20,35 @@ from sse_starlette.sse import EventSourceResponse
 
 import cicflowmeter
 
+FLOW_POLL_TIMEOUT = 1.0
 PROTOCOL_NAMES = {6: "TCP", 17: "UDP"}
+
+Flow = dict[str, Any]
+Prediction = dict[str, float]
 
 
 class FlowExtractor:
+    @dataclass
+    class Captured:
+        flow: Flow
+
+    class Done:
+        pass
+
+    class Waiting:
+        pass
+
+    Result = Captured | Done | Waiting
+
     def __init__(
         self,
         expired_update: int,
-        output_queue: Queue[dict[str, Any]],
         interface: Optional[str],
         pcap_file: Optional[str]
     ):
-        writer = SimpleNamespace(write=output_queue.put)
+        self._queue: Queue[Flow] = Queue()
+        # cicflowmeter expects a class with a write method
+        writer = SimpleNamespace(write=self._queue.put)  
         self._sniffer, self._session = cicflowmeter.create_sniffer(
             input_file=pcap_file,
             input_interface=interface,
@@ -41,7 +58,7 @@ class FlowExtractor:
         )
         self._is_live = interface is not None
 
-    def start(self):
+    def __enter__(self):
         self._sniffer.start()
         if self._is_live:
             self._sniffer.join(1.0)
@@ -50,16 +67,23 @@ class FlowExtractor:
                     "Packet capture failed to start "
                     "(check permissions and interface name)"
                 )
+        return self
 
-    def stop(self):
+    def __exit__(self, *exc):
         if self._is_live:
             self._sniffer.stop()
         else:
             self._sniffer.join()
-        current_time = time.time() * 1_000_000
-        self._session.garbage_collect(current_time)
+        return False
 
-    def is_done(self) -> bool:
+    def get_flow(self, timeout: float) -> Result:
+        try:
+            flow = self._queue.get(timeout=timeout)
+            return self.Captured(flow)
+        except Empty:
+            return self.Done() if self._is_done() else self.Waiting()
+
+    def _is_done(self) -> bool:
         return not self._is_live and not self._sniffer.running
 
 
@@ -83,7 +107,7 @@ class Classifier:
         encoder = joblib.load(model_dir / "encoder.pkl")
         return cls(model, scaler, encoder)
 
-    def _preprocess(self, flow: dict) -> np.ndarray:
+    def _preprocess(self, flow: Flow) -> np.ndarray:
         values = np.array(
             [flow.get(feature, 0.0) for feature in self._features],
             dtype=np.float64
@@ -92,41 +116,38 @@ class Classifier:
         df = pd.DataFrame([values], columns=self._features)
         return self._scaler.transform(df)
 
-    def classify(self, flow: dict[str, Any]) -> dict[str, float]:
+    def classify(self, flow: Flow) -> Prediction:
         data = self._preprocess(flow)
         probs = self._model.predict_proba(data)[0]
         return dict(zip(self._classes, probs))
 
 
-class FlowLogger:
-    def __init__(self, log_dir: Path, source: str):
-        log_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-        filename = f"{timestamp}-{source}.jsonl"
-        self._file = open(log_dir / filename, "w", newline="")
-
-    def log(self, flow: dict[str, Any], prediction: dict[str, float]):
-        record = {"flow": flow, "prediction": prediction}
-        obj = json.dumps(record, default=float)
-        self._file.write(f"{obj}\n")
-        self._file.flush()
-
-    def close(self):
-        self._file.close()
-
-
 class Dashboard:
-    def __init__(self, log_dir: Path):
+    def __init__(self, log_dir: Path, host: str, port: int):
         self._log_dir = log_dir
         self._clients: list[Queue[dict]] = []
         self._clients_lock = Lock()
-        self._flows: list[dict] = []
-        self.app = self._create_app()
+        self._flows: list[Flow] = []
+        self._host = host
+        self._port = port
+        self._app = self._create_app()
 
-    def push(self, flow: dict, prediction: dict):
+    def __enter__(self):
+        Thread(
+            target=uvicorn.run,
+            args=(self._app,),
+            kwargs={"host": self._host, "port": self._port},
+            daemon=True,
+        ).start()
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def push(self, flow: Flow, prediction: Prediction):
         event = self._flow_to_event(flow, prediction)
-        self._flows.append(event)
         with self._clients_lock:
+            self._flows.append(event)
             for client in self._clients:
                 client.put(event)
 
@@ -189,8 +210,8 @@ class Dashboard:
         return path.read_text()
 
     @staticmethod
-    def _flow_to_event(flow: dict, prediction: dict) -> dict:
-        predicted_class = max(prediction, key=prediction.get)
+    def _flow_to_event(flow: Flow, prediction: Prediction) -> dict:
+        predicted_class = max(prediction, key=lambda k: prediction[k])
         confidence = prediction[predicted_class]
 
         return {
@@ -210,56 +231,64 @@ class Dashboard:
         }
 
 
-def main():
+def parse_args():
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("-i", "--interface", help="Live capture interface")
     group.add_argument("-p", "--pcap", help="Path to pcap file")
     parser.add_argument("-l", "--log-dir", default="logs/", 
                         help="Log output directory")
-    parser.add_argument("-e", "--expired_update", default=10,
+    parser.add_argument("-e", "--expired_update", default=10, type=int,
                         help="Expired flow update interval")
     parser.add_argument("-P", "--port", type=int, default=8000, 
                         help="Dashboard port")
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    source = args.interface if args.interface else Path(args.pcap).stem
-    flow_queue = Queue()
 
-    flow_extractor = FlowExtractor(
-        args.expired_update, flow_queue, args.interface, args.pcap
-    )
+def make_log_path(log_dir: Path, source: str) -> Path:
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")                                                                                                                                   
+    return log_dir / f"{timestamp}-{source}.jsonl"
+
+
+def log_flow(file: TextIO, flow: Flow, prediction: Prediction):
+    record = {"flow": flow, "prediction": prediction}
+    obj = json.dumps(record, default=float)
+    file.write(f"{obj}\n")
+    file.flush()
+
+
+def main():
+    args = parse_args()
+
+    source = args.interface or Path(args.pcap).stem
+
+    log_dir = Path(args.log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = make_log_path(log_dir, source)
+
     classifier = Classifier.from_artifacts(Path("models/"))
-    logger = FlowLogger(Path(args.log_dir), source)
-    dashboard = Dashboard(Path(args.log_dir))
 
-    Thread(
-        target=uvicorn.run,
-        args=(dashboard.app,),
-        kwargs={"host": "0.0.0.0", "port": args.port},
-        daemon=True,
-    ).start()
+    with (
+        FlowExtractor(
+            args.expired_update, args.interface, args.pcap
+        ) as extractor,
+        log_path.open("w", newline="") as log_file,
+        Dashboard(Path(args.log_dir), "0.0.0.0", args.port) as dashboard,
+    ):
+        try:
+            while True:
+                match extractor.get_flow(timeout=FLOW_POLL_TIMEOUT):
+                    case FlowExtractor.Captured(flow):
+                        prediction = classifier.classify(flow)
+                        log_flow(log_file, flow, prediction)
+                        dashboard.push(flow, prediction)
+                    case FlowExtractor.Done():
+                        break
+                    case FlowExtractor.Waiting():
+                        pass
 
-    flow_extractor.start()
-
-    try:
-        while True:
-            try:
-                flow = flow_queue.get(timeout=1.0)
-            except Empty:
-                if flow_extractor.is_done():
-                    break
-                continue
-            prediction = classifier.classify(flow)
-            logger.log(flow, prediction)
-            dashboard.push(flow, prediction)
-
-    except KeyboardInterrupt:
-        pass
-
-    finally:
-        flow_extractor.stop()
-        logger.close()
+        except KeyboardInterrupt:
+            pass
 
 
 if __name__ == "__main__":
