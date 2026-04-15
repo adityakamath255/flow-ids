@@ -27,18 +27,6 @@ Prediction = dict[str, float]
 
 
 class FlowExtractor:
-    @dataclass
-    class Captured:
-        flow: Flow
-
-    class Done:
-        pass
-
-    class Waiting:
-        pass
-
-    Result = Captured | Done | Waiting
-
     def __init__(
         self,
         expired_update: int,
@@ -71,18 +59,16 @@ class FlowExtractor:
     def __exit__(self, *exc):
         if self._is_live:
             self._sniffer.stop()
-        else:
-            self._sniffer.join()
+        self._sniffer.join()
         return False
 
-    def get_flow(self, timeout: float) -> Result:
+    def get_flow(self, timeout: float) -> Optional[Flow]:
         try:
-            flow = self._queue.get(timeout=timeout)
-            return self.Captured(flow)
+            return self._queue.get(timeout=timeout)
         except Empty:
-            return self.Done() if self._is_done() else self.Waiting()
+            return None
 
-    def _is_done(self) -> bool:
+    def is_done(self) -> bool:
         return not self._is_live and not self._sniffer.running
 
 
@@ -127,17 +113,13 @@ class Dashboard:
         self._port = port
         self._app = self._create_app()
 
-    def __enter__(self):
+    def start(self):
         Thread(
             target=uvicorn.run,
             args=(self._app,),
             kwargs={"host": self._host, "port": self._port},
             daemon=True,
         ).start()
-        return self
-
-    def __exit__(self, *exc):
-        return False
 
     def push(self, flow: Flow, prediction: Prediction):
         event = self._flow_to_event(flow, prediction)
@@ -262,26 +244,22 @@ def main():
     log_path = make_log_path(log_dir, source)
 
     classifier = Classifier.from_artifacts(Path("models/"))
+    dashboard = Dashboard(Path(args.log_dir), "0.0.0.0", args.port)
+    dashboard.start()
 
     with (
         FlowExtractor(
             args.expired_update, args.interface, args.pcap
         ) as extractor,
         log_path.open("w", newline="") as log_file,
-        Dashboard(Path(args.log_dir), "0.0.0.0", args.port) as dashboard,
     ):
         try:
-            while True:
-                match extractor.get_flow(timeout=FLOW_POLL_TIMEOUT):
-                    case FlowExtractor.Captured(flow):
-                        prediction = classifier.classify(flow)
-                        log_flow(log_file, flow, prediction)
-                        dashboard.push(flow, prediction)
-                    case FlowExtractor.Done():
-                        break
-                    case FlowExtractor.Waiting():
-                        pass
-
+            while not extractor.is_done():
+                flow = extractor.get_flow(timeout=FLOW_POLL_TIMEOUT)
+                if flow:
+                    prediction = classifier.classify(flow)
+                    log_flow(log_file, flow, prediction)
+                    dashboard.push(flow, prediction)
         except KeyboardInterrupt:
             pass
 
