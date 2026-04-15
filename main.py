@@ -89,17 +89,14 @@ class Classifier:
         encoder = joblib.load(model_dir / "encoder.pkl")
         return cls(model, encoder)
 
-    def _preprocess(self, flow: Flow) -> np.ndarray:
+    def classify(self, flow: Flow) -> Prediction:
         values = np.array(
             [flow.get(feature, np.nan) for feature in self._features],
             dtype=np.float64
         )
         values = np.where(np.isinf(values), np.nan, values)
-        return values.reshape(1, -1)
-
-    def classify(self, flow: Flow) -> Prediction:
-        data = self._preprocess(flow)
-        probs = self._model.predict_proba(data)[0]
+        values = values.reshape(1, -1)
+        probs = self._model.predict_proba(values)[0]
         return dict(zip(self._classes, probs))
 
 
