@@ -26,44 +26,45 @@ Flow = dict[str, Any]
 Prediction = dict[str, float]
 
 
-class FlowExtractor:
+class FlowStream:
     def __init__(
         self,
-        expired_update: int,
-        queue: Queue[Flow],
+        idle_timeout: int,
         interface: Optional[str],
-        pcap_file: Optional[str]
+        pcap_file: Optional[str],
     ):
-        # cicflowmeter expects a class with a write method
-        writer = SimpleNamespace(write=queue.put)  
-        self._sniffer, self._session = cicflowmeter.create_sniffer(
+        # this fork of cicflowmeter expects a class with a write method
+        self._queue: Queue[Flow] = Queue()
+        writer = SimpleNamespace(write=self._queue.put)
+        self._sniffer, _ = cicflowmeter.create_sniffer(
             input_file=pcap_file,
             input_interface=interface,
             output_mode="custom",
             output=writer,
-            expired_update=expired_update
+            expired_update=idle_timeout
         )
         self._is_live = interface is not None
 
-    def __enter__(self) -> "FlowExtractor":
+    def __enter__(self) -> "FlowStream":
         self._sniffer.start()
-        if self._is_live:
-            self._sniffer.join(1.0)
-            if not self._sniffer.running:
-                raise RuntimeError(
-                    "Packet capture failed to start "
-                    "(check permissions and interface name)"
-                )
         return self
 
-    def __exit__(self, *exc: object) -> bool:
+    def __exit__(self, *exc) -> bool:
         if self._is_live:
             self._sniffer.stop()
         self._sniffer.join()
         return False
 
-    def is_done(self) -> bool:
-        return not self._is_live and not self._sniffer.running
+    def __iter__(self) -> "FlowStream":
+        return self
+
+    def __next__(self) -> Flow:
+        while True:
+            try:
+                return self._queue.get(timeout=FLOW_POLL_TIMEOUT)
+            except Empty:
+                if not self._sniffer.running:
+                    raise StopIteration
 
 
 class Classifier:
@@ -197,7 +198,7 @@ def parse_args() -> argparse.Namespace:
     group.add_argument("-p", "--pcap", help="Path to pcap file")
     parser.add_argument("-l", "--log-dir", default="logs/", 
                         help="Log output directory")
-    parser.add_argument("-e", "--expired_update", default=10, type=int,
+    parser.add_argument("-t", "--idle-timeout", default=10, type=int,
                         help="Expired flow update interval")
     parser.add_argument("-P", "--port", type=int, default=8000, 
                         help="Dashboard port")
@@ -231,27 +232,18 @@ def main():
     dashboard = Dashboard(log_dir)
     dashboard.start(args.host, args.port)
 
-    flow_queue: Queue[Flow] = Queue()
-
     with (
-        FlowExtractor(
-            args.expired_update, flow_queue,
-            args.interface, args.pcap
-        ) as extractor,
+        FlowStream(args.idle_timeout, args.interface, args.pcap) as stream,
         log_path.open("w", newline="") as log_file,
     ):
-        try:
-            while not extractor.is_done():
-                try:
-                    flow = flow_queue.get(timeout=FLOW_POLL_TIMEOUT)
-                except Empty:
-                    continue
-                prediction = classifier.classify(flow)
-                log_flow(log_file, flow, prediction)
-                dashboard.push(flow, prediction)
-        except KeyboardInterrupt:
-            pass
+        for flow in stream:
+            prediction = classifier.classify(flow)
+            log_flow(log_file, flow, prediction)
+            dashboard.push(flow, prediction)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
