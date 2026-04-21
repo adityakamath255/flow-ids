@@ -1,6 +1,5 @@
-from dataclasses import dataclass
 from queue import Queue, Empty
-from typing import Optional, Any, TextIO
+from typing import Optional, Any, TextIO, Generator
 from types import SimpleNamespace
 from pathlib import Path
 import joblib
@@ -12,6 +11,7 @@ import argparse
 import numpy as np
 from xgboost import XGBClassifier
 from sklearn.preprocessing import LabelEncoder
+
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
@@ -30,12 +30,12 @@ class FlowExtractor:
     def __init__(
         self,
         expired_update: int,
+        queue: Queue[Flow],
         interface: Optional[str],
         pcap_file: Optional[str]
     ):
-        self._queue: Queue[Flow] = Queue()
         # cicflowmeter expects a class with a write method
-        writer = SimpleNamespace(write=self._queue.put)  
+        writer = SimpleNamespace(write=queue.put)  
         self._sniffer, self._session = cicflowmeter.create_sniffer(
             input_file=pcap_file,
             input_interface=interface,
@@ -45,7 +45,7 @@ class FlowExtractor:
         )
         self._is_live = interface is not None
 
-    def __enter__(self):
+    def __enter__(self) -> "FlowExtractor":
         self._sniffer.start()
         if self._is_live:
             self._sniffer.join(1.0)
@@ -56,17 +56,11 @@ class FlowExtractor:
                 )
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, *exc: object) -> bool:
         if self._is_live:
             self._sniffer.stop()
         self._sniffer.join()
         return False
-
-    def get_flow(self, timeout: float) -> Optional[Flow]:
-        try:
-            return self._queue.get(timeout=timeout)
-        except Empty:
-            return None
 
     def is_done(self) -> bool:
         return not self._is_live and not self._sniffer.running
@@ -100,74 +94,91 @@ class Classifier:
         return dict(zip(self._classes, probs))
 
 
+def load_html() -> str:
+    path = Path(__file__).parent / "dashboard.html"
+    return path.read_text()
+
+
+def flow_to_event(flow: Flow, prediction: Prediction) -> dict[str, Any]:
+    predicted_class = max(prediction, key=lambda k: prediction[k])
+    confidence = prediction[predicted_class]
+
+    return {
+        "timestamp": flow["timestamp"],
+        "src": f"{flow['src_ip']}:{flow['src_port']}",
+        "dst": f"{flow['dst_ip']}:{flow['dst_port']}",
+        "protocol": PROTOCOL_NAMES.get(
+            flow["protocol"],
+            str(flow["protocol"])
+        ),
+        "duration": round(float(flow["flow_duration"]), 3),
+        "packets": flow["tot_fwd_pkts"] + flow["tot_bwd_pkts"],
+        "bytes": flow["totlen_fwd_pkts"] + flow["totlen_bwd_pkts"],
+        "class": predicted_class,
+        "confidence": round(float(confidence), 3),
+        "threat": round(float(1.0 - prediction.get("BENIGN", 0.0)), 3),
+    }
+
+
 class Dashboard:
-    def __init__(self, log_dir: Path, host: str, port: int):
-        self._log_dir = log_dir
+    def __init__(self, log_dir: Path):
         self._clients: list[Queue[dict]] = []
         self._clients_lock = Lock()
         self._flows: list[Flow] = []
-        self._host = host
-        self._port = port
-        self._app = self._create_app()
+        self._app = self._create_app(log_dir)
 
-    def start(self):
+    def start(self, host: str, port: int):
         Thread(
             target=uvicorn.run,
             args=(self._app,),
-            kwargs={"host": self._host, "port": self._port},
+            kwargs={"host": host, "port": port},
             daemon=True,
         ).start()
 
     def push(self, flow: Flow, prediction: Prediction):
-        event = self._flow_to_event(flow, prediction)
+        event = flow_to_event(flow, prediction)
         with self._clients_lock:
             self._flows.append(event)
             for client in self._clients:
                 client.put(event)
 
-    def _create_app(self) -> FastAPI:
+    def _create_app(self, log_dir: Path) -> FastAPI:
+        log_dir = log_dir.resolve()
         app = FastAPI()
-        html = self._load_html()
+        html = load_html()
 
         @app.get("/")
-        def index():
+        def index() -> HTMLResponse:
             return HTMLResponse(html)
 
         @app.get("/api/flows")
-        def flows_sse():
+        def flows_sse() -> EventSourceResponse:
             return EventSourceResponse(self._flow_generator())
 
         @app.get("/api/snapshot")
-        def get_snapshot():
+        def get_snapshot() -> dict[str, list[dict[str, Any]]]:
             return {"flows": list(self._flows)}
 
         @app.get("/api/logs")
-        def list_logs():
-            files = sorted(self._log_dir.glob("*.jsonl"))
+        def list_logs() -> list[str]:
+            files = sorted(log_dir.glob("*.jsonl"))
             return [f.name for f in files]
 
         @app.get("/api/logs/{filename}")
-        def get_log(filename: str):
-            path = (self._log_dir / filename).resolve()
-            if not path.is_relative_to(self._log_dir.resolve()):
+        def get_log(filename: str) -> list[dict[str, Any]]:
+            path = (log_dir / filename).resolve()
+            if not path.is_relative_to(log_dir):
                 raise HTTPException(status_code=403)
 
             with open(path) as f:
-                records = (
-                    json.loads(line)
-                    for line in f
-                )
-                flows = [
-                    self._flow_to_event(
-                        record["flow"], record["prediction"]
-                    )
-                    for record in records
+                return [
+                    flow_to_event(record["flow"], record["prediction"])
+                    for record in map(json.loads, f)
                 ]
-            return flows
 
         return app
 
-    def _flow_generator(self):
+    def _flow_generator(self) -> Generator[str, None, None]:
         q = Queue()
         with self._clients_lock:
             self._clients.append(q)
@@ -178,34 +189,8 @@ class Dashboard:
             with self._clients_lock:
                 self._clients.remove(q)
 
-    @staticmethod
-    def _load_html() -> str:
-        path = Path(__file__).parent / "dashboard.html"
-        return path.read_text()
 
-    @staticmethod
-    def _flow_to_event(flow: Flow, prediction: Prediction) -> dict:
-        predicted_class = max(prediction, key=lambda k: prediction[k])
-        confidence = prediction[predicted_class]
-
-        return {
-            "timestamp": flow["timestamp"],
-            "src": f"{flow['src_ip']}:{flow['src_port']}",
-            "dst": f"{flow['dst_ip']}:{flow['dst_port']}",
-            "protocol": PROTOCOL_NAMES.get(
-                flow["protocol"],
-                str(flow["protocol"])
-            ),
-            "duration": round(float(flow["flow_duration"]), 3),
-            "packets": flow["tot_fwd_pkts"] + flow["tot_bwd_pkts"],
-            "bytes": flow["totlen_fwd_pkts"] + flow["totlen_bwd_pkts"],
-            "class": predicted_class,
-            "confidence": round(float(confidence), 3),
-            "threat": round(float(1.0 - prediction.get("BENIGN", 0.0)), 3),
-        }
-
-
-def parse_args():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("-i", "--interface", help="Live capture interface")
@@ -216,6 +201,8 @@ def parse_args():
                         help="Expired flow update interval")
     parser.add_argument("-P", "--port", type=int, default=8000, 
                         help="Dashboard port")
+    parser.add_argument("-H", "--host", type=str, default="0.0.0.0",
+                        help="Dashboard host")
     return parser.parse_args()
 
 
@@ -241,22 +228,27 @@ def main():
     log_path = make_log_path(log_dir, source)
 
     classifier = Classifier.from_artifacts(Path("models/"))
-    dashboard = Dashboard(Path(args.log_dir), "0.0.0.0", args.port)
-    dashboard.start()
+    dashboard = Dashboard(log_dir)
+    dashboard.start(args.host, args.port)
+
+    flow_queue: Queue[Flow] = Queue()
 
     with (
         FlowExtractor(
-            args.expired_update, args.interface, args.pcap
+            args.expired_update, flow_queue,
+            args.interface, args.pcap
         ) as extractor,
         log_path.open("w", newline="") as log_file,
     ):
         try:
             while not extractor.is_done():
-                flow = extractor.get_flow(timeout=FLOW_POLL_TIMEOUT)
-                if flow:
-                    prediction = classifier.classify(flow)
-                    log_flow(log_file, flow, prediction)
-                    dashboard.push(flow, prediction)
+                try:
+                    flow = flow_queue.get(timeout=FLOW_POLL_TIMEOUT)
+                except Empty:
+                    continue
+                prediction = classifier.classify(flow)
+                log_flow(log_file, flow, prediction)
+                dashboard.push(flow, prediction)
         except KeyboardInterrupt:
             pass
 
