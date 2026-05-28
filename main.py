@@ -31,8 +31,8 @@ class FlowStream:
         self._sniffer, _ = cicflowmeter.create_sniffer(
             input_file=pcap_file,
             input_interface=interface,
-            output_mode="callback",
-            output=self._queue.put,
+            mode="callback",
+            writer=self._queue.put,
             expired_update=idle_timeout
         )
 

@@ -31,12 +31,12 @@ def _start_periodic_gc(session, interval=GC_INTERVAL):
 
 
 def create_sniffer(
-    input_file, 
-    input_interface, 
-    output_mode, 
-    output, 
-    input_directory=None, 
-    fields=None, 
+    input_file,
+    input_interface,
+    mode,
+    writer,
+    input_directory=None,
+    fields=None,
     verbose=False,
     expired_update=EXPIRED_UPDATE,
 ):
@@ -48,8 +48,8 @@ def create_sniffer(
 
     # Pass config to FlowSession constructor
     session = FlowSession(
-        output_mode=output_mode,
-        output=output,
+        mode=mode,
+        writer=writer,
         fields=fields,
         verbose=verbose,
         expired_update=expired_update
@@ -112,8 +112,8 @@ def process_directory_merged(input_dir, output_dir, fields=None, verbose=False):
 
     # Create a single sniffer session for all files
     session = FlowSession(
-        output_mode="csv",
-        output=str(output_file),
+        mode="csv",
+        writer=str(output_file),
         fields=fields,
         verbose=verbose,
     )
@@ -195,8 +195,8 @@ def process_directory(input_dir, output_dir, fields=None, verbose=False):
             sniffer, session = create_sniffer(
                 input_file=str(pcap_file),
                 input_interface=None,
-                output_mode="csv",
-                output=str(output_file),
+                mode="csv",
+                writer=str(output_file),
                 fields=fields,
                 verbose=verbose,
             )

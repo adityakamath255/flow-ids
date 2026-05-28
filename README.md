@@ -1,6 +1,6 @@
 # flow-ids
 
-Network intrusion detection system. Sniffs live traffic or replays pcap files, extracts flow-level features, and classifies each flow with a trained XGBoost model. Results stream to a real-time web dashboard and are logged as JSONL.
+Network intrusion detection system. Sniffs live traffic or replays pcap files, extracts flow-level features, and classifies each flow with a trained XGBoost model. Results are written to a SQLite database and viewed through a real-time Streamlit dashboard.
 
 ## Architecture
 
@@ -8,26 +8,25 @@ Network intrusion detection system. Sniffs live traffic or replays pcap files, e
 packets          Scapy AsyncSniffer
    │
    ▼
-flows            FlowSession (modified CICFlowMeter)
+flows            FlowSession (vendored CICFlowMeter)
    │             extracts ~80 features per flow
    ▼
 flow queue
    │
    ▼
-main thread ───→ Classifier (XGBoost)
-   │
-   ├───→ Dashboard (FastAPI + SSE)
-   │
-   └───→ JSONL log
+main thread ───→ Classifier (XGBoost) ───→ SQLite (flows.db)
+                                               │
+                                               ▼
+                                          Dashboard (Streamlit, read-only)
 ```
 
-Scapy captures packets and a modified [CICFlowMeter](https://github.com/hieulw/cicflowmeter) assembles them into bidirectional network flows with statistical features (packet lengths, inter-arrival times, flag counts, byte rates). The main thread pulls flows from the queue, classifies each one, and pushes results to the dashboard and log file.
+Scapy captures packets and a vendored copy of [CICFlowMeter](https://github.com/hieulw/cicflowmeter) (in `cicflowmeter/`) assembles them into bidirectional network flows with statistical features (packet lengths, inter-arrival times, flag counts, byte rates). The sniffer runs on its own thread and pushes completed flows onto a queue; the main thread pulls each flow, classifies it, and writes the result to a SQLite database.
 
-Two threads: Scapy's sniffer and a daemon thread running uvicorn for the dashboard. Classification and logging happen on the main thread.
+The dashboard is a separate Streamlit process that reads the same database read-only (the writer uses WAL mode, so reads and writes don't block each other).
 
 ## Model
 
-Trained on the [CIC-IDS2017](https://www.unb.ca/cic/datasets/ids-2017.html) dataset. The training pipeline removes duplicates, maps dataset columns to CICFlowMeter feature names, groups 15 attack labels into 5 classes, and trains an XGBoost classifier.
+Trained on the [CIC-IDS2017](https://www.unb.ca/cic/datasets/ids-2017.html) dataset. The training pipeline removes duplicates, maps dataset columns to CICFlowMeter feature names, groups attack labels into 5 classes, and trains an XGBoost classifier.
 
 Per-class results on the test set (20% stratified split, 504k samples):
 
@@ -75,16 +74,20 @@ Pcap replay:
 python3 main.py -p <file.pcap>
 ```
 
-The dashboard runs at `http://localhost:8000`. Past sessions can be viewed from the session dropdown.
+Either command writes classified flows to `flows.db`. In a second terminal, start the dashboard:
+
+```bash
+streamlit run dashboard.py
+```
 
 Options:
 
 ```
--i, --interface       Network interface for live capture
--p, --pcap            Path to pcap file for replay
--l, --log-dir         Log output directory (default: logs/)
--e, --expired_update  Flow expiry interval in seconds (default: 10)
--P, --port            Dashboard port (default: 8000)
+-i, --interface     Network interface for live capture (mutually exclusive with -p)
+-p, --pcap          Path to pcap file for replay (mutually exclusive with -i)
+-m, --model-dir     Model directory (default: models/)
+-t, --idle-timeout  Expired flow update interval in seconds (default: 10)
+-d, --db            SQLite output path (default: flows.db)
 ```
 
 ## Retraining
@@ -99,6 +102,8 @@ This writes `model.json` and `encoder.pkl` to `models/`. Training configuration 
 
 ## Stack
 
-Scapy, XGBoost, scikit-learn, FastAPI, uvicorn, SSE, Chart.js
+Scapy, XGBoost, scikit-learn, Streamlit, pandas, SQLite
 
 Requires Python 3.10+.
+</content>
+</invoke>

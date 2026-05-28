@@ -43,13 +43,21 @@ class HttpWriter(OutputWriter):
         self.session.close()
 
 
-def output_writer_factory(output_mode, output) -> OutputWriter:
-    match output_mode:
+class CallbackWriter(OutputWriter):
+    def __init__(self, callback) -> None:
+        self.callback = callback
+
+    def write(self, data: dict) -> None:
+        self.callback(data)
+
+
+def output_writer_factory(mode, writer) -> OutputWriter:
+    match mode:
         case "url":
-            return HttpWriter(output)
+            return HttpWriter(writer)
         case "csv":
-            return CSVWriter(output)
-        case "custom":
-            return output
+            return CSVWriter(writer)
+        case "callback":
+            return CallbackWriter(writer)
         case _:
-            raise RuntimeError("no output_mode provided")
+            raise RuntimeError(f"unknown output mode: {mode!r}")

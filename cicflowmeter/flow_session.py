@@ -14,9 +14,9 @@ class FlowSession(DefaultSession):
 
     def __init__(
         self, 
-        output_mode=None, 
-        output=None, 
-        fields=None, 
+        mode=None,
+        writer=None,
+        fields=None,
         verbose=False, 
         expired_update=EXPIRED_UPDATE,
         *args, 
@@ -26,12 +26,11 @@ class FlowSession(DefaultSession):
         self.verbose = verbose
         self.expired_update = expired_update
         self.fields = fields
-        self.output_mode = output_mode
-        self.output = output
+        self.mode = mode
+        self.writer = writer
         self.logger = get_logger(self.verbose)
         self.packets_count = 0
-        self.output_writer = output_writer_factory(
-            self.output_mode, self.output)
+        self.output_writer = output_writer_factory(self.mode, self.writer)
 
         # NEW: lock protecting self.flows
         self._lock = threading.Lock()
