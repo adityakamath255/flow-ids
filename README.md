@@ -14,24 +14,20 @@ flows            FlowSession (modified CICFlowMeter)
 flow queue
    │
    ▼
-predictions      Ids thread (XGBoost classifier)
+main thread ───→ Classifier (XGBoost)
    │
-   ▼
-output queue
+   ├───→ Dashboard (FastAPI + SSE)
    │
-   ▼
-main thread ───→ Dashboard (FastAPI + SSE)
-   │
-   └───→ FlowLogger (JSONL)
+   └───→ JSONL log
 ```
 
-Scapy captures packets and a modified [CICFlowMeter](https://github.com/hieulw/cicflowmeter) assembles them into bidirectional network flows with statistical features (packet lengths, inter-arrival times, flag counts, byte rates). The Ids thread classifies each flow and puts the result on an output queue. The main thread consumes from that queue and pushes to the dashboard and logger.
+Scapy captures packets and a modified [CICFlowMeter](https://github.com/hieulw/cicflowmeter) assembles them into bidirectional network flows with statistical features (packet lengths, inter-arrival times, flag counts, byte rates). The main thread pulls flows from the queue, classifies each one, and pushes results to the dashboard and log file.
 
-Three threads: Scapy's sniffer, the Ids classifier thread, and a daemon thread running uvicorn for the dashboard.
+Two threads: Scapy's sniffer and a daemon thread running uvicorn for the dashboard. Classification and logging happen on the main thread.
 
 ## Model
 
-Trained on the [CIC-IDS2017](https://www.unb.ca/cic/datasets/ids-2017.html) dataset. The training pipeline removes duplicates, drops correlated and zero-variance features (78 → 48), groups 15 attack labels into 5 classes, and trains an XGBoost classifier with StandardScaler normalization.
+Trained on the [CIC-IDS2017](https://www.unb.ca/cic/datasets/ids-2017.html) dataset. The training pipeline removes duplicates, maps dataset columns to CICFlowMeter feature names, groups 15 attack labels into 5 classes, and trains an XGBoost classifier.
 
 Per-class results on the test set (20% stratified split, 504k samples):
 
@@ -48,8 +44,8 @@ CIC-IDS2017 is synthetic traffic generated in a controlled environment. Real-wor
 ## Setup
 
 ```bash
-git clone https://github.com/adityakamath255/ids.git
-cd ids
+git clone https://github.com/adityakamath255/flow-ids.git
+cd flow-ids
 python3 -m venv --copies .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -84,11 +80,11 @@ The dashboard runs at `http://localhost:8000`. Past sessions can be viewed from 
 Options:
 
 ```
--i, --interface    Network interface for live capture
--p, --pcap         Path to pcap file for replay
--l, --log-dir      Log output directory (default: logs/)
+-i, --interface       Network interface for live capture
+-p, --pcap            Path to pcap file for replay
+-l, --log-dir         Log output directory (default: logs/)
 -e, --expired_update  Flow expiry interval in seconds (default: 10)
--P, --port         Dashboard port (default: 8000)
+-P, --port            Dashboard port (default: 8000)
 ```
 
 ## Retraining
@@ -96,10 +92,10 @@ Options:
 Place the CIC-IDS2017 CSV files in `training-data/MachineLearningCVE/`, then:
 
 ```bash
-python3 -m training.train
+python3 train.py
 ```
 
-This writes `model.json`, `scaler.pkl`, and `encoder.pkl` to `models/`. Training configuration (feature selection, class grouping, XGBoost hyperparameters) is in `training/config.py`.
+This writes `model.json` and `encoder.pkl` to `models/`. Training configuration (feature mapping, class grouping, XGBoost hyperparameters) is at the top of `train.py`.
 
 ## Stack
 

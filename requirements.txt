@@ -1,10 +1,7 @@
-scapy
-xgboost
-scikit-learn
 numpy
 pandas
+scapy
+scikit-learn
 scipy
-fastapi
-uvicorn
-sse-starlette
-requests
+streamlit
+xgboost
