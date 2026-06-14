@@ -42,42 +42,43 @@ CIC-IDS2017 is synthetic traffic generated in a controlled environment. Real-wor
 
 ## Setup
 
+Install [uv](https://docs.astral.sh/uv/), then:
+
 ```bash
 git clone https://github.com/adityakamath255/flow-ids.git
 cd flow-ids
-python3 -m venv --copies .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+uv sync
 ```
 
-The `--copies` flag is required. It copies the Python binary into the venv instead of symlinking it, which is needed for the next step.
+`uv sync` creates `.venv/` and installs the exact dependency versions pinned in `uv.lock` and the Python version pinned in `.python-version`. Run commands with `uv run` (e.g. `uv run python3 main.py ...`) or activate the venv with `source .venv/bin/activate`.
 
-For live capture, the venv Python binary needs packet capture capabilities:
+For live capture, the venv Python binary needs packet capture capabilities. `uv` symlinks the venv interpreter to the base Python, so first replace that symlink with a private copy, then grant the capability to the copy (this avoids modifying the shared interpreter):
 
 ```bash
+cp --remove-destination "$(readlink -f .venv/bin/python3)" .venv/bin/python3
 sudo setcap cap_net_raw,cap_net_admin=eip .venv/bin/python3
 ```
 
-This is not needed for pcap replay.
+Neither step is needed for pcap replay.
 
 ## Usage
 
 Live capture:
 
 ```bash
-python3 main.py -i <interface>
+uv run python3 main.py -i <interface>
 ```
 
 Pcap replay:
 
 ```bash
-python3 main.py -p <file.pcap>
+uv run python3 main.py -p <file.pcap>
 ```
 
 Either command writes classified flows to `flows.db`. In a second terminal, start the dashboard:
 
 ```bash
-streamlit run dashboard.py
+uv run streamlit run dashboard.py
 ```
 
 Options:
@@ -95,7 +96,7 @@ Options:
 Place the CIC-IDS2017 CSV files in `training-data/MachineLearningCVE/`, then:
 
 ```bash
-python3 train.py
+uv run python3 train.py
 ```
 
 This writes `model.json` and `encoder.pkl` to `models/`. Training configuration (feature mapping, class grouping, XGBoost hyperparameters) is at the top of `train.py`.

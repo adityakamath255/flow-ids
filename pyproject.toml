@@ -1,0 +1,20 @@
+[project]
+name = "flow-ids"
+version = "0.1.0"
+description = "Network intrusion detection system: extracts flow-level features from live or replayed traffic and classifies each flow with a trained XGBoost model."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scapy",
+    "scikit-learn",
+    "scipy",
+    "streamlit",
+    "xgboost",
+    "joblib",
+    "requests",
+]
+
+[tool.uv]
+package = false

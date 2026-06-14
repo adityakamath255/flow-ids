@@ -80,12 +80,23 @@ class Classifier:
 
 
 class FlowStore:
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, source: str):
+        self._source = source
+        self._session_id: int | None = None
         self._conn = sqlite3.connect(db_path)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                id         INTEGER PRIMARY KEY,
+                source     TEXT NOT NULL,
+                started_at REAL NOT NULL,
+                ended_at   REAL
+            )
+        """)
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS flows (
                 id          INTEGER PRIMARY KEY,
+                session_id  INTEGER NOT NULL REFERENCES sessions(id),
                 recorded_at REAL    NOT NULL,
                 src_ip      TEXT,
                 dst_ip      TEXT,
@@ -101,19 +112,30 @@ class FlowStore:
         self._conn.commit()
 
     def __enter__(self) -> "FlowStore":
+        cursor = self._conn.execute(
+            "INSERT INTO sessions (source, started_at) VALUES (?, ?)",
+            (self._source, time.time()),
+        )
+        self._session_id = cursor.lastrowid
+        self._conn.commit()
         return self
 
     def __exit__(self, *exc) -> None:
+        self._conn.execute(
+            "UPDATE sessions SET ended_at = ? WHERE id = ?",
+            (time.time(), self._session_id),
+        )
+        self._conn.commit()
         self._conn.close()
 
     def record(self, flow: Flow, prediction: Prediction) -> None:
         label = max(prediction, key=prediction.get)
         self._conn.execute(
-            "INSERT INTO flows (recorded_at, src_ip, dst_ip, src_port, "
-            "dst_port, protocol, label, confidence, flow, prediction) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO flows (session_id, recorded_at, src_ip, dst_ip, "
+            "src_port, dst_port, protocol, label, confidence, flow, prediction) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                time.time(),
+                self._session_id, time.time(),
                 flow.get("src_ip"), flow.get("dst_ip"),
                 flow.get("src_port"), flow.get("dst_port"),
                 flow.get("protocol"),
@@ -142,9 +164,10 @@ def parse_args() -> argparse.Namespace:
 def main():
     args = parse_args()
     classifier = Classifier.load(args.model_dir)
+    source = f"interface:{args.interface}" if args.interface else f"pcap:{args.pcap}"
     with (
         FlowStream(args.idle_timeout, args.interface, args.pcap) as stream,
-        FlowStore(args.db) as store,
+        FlowStore(args.db, source) as store,
     ):
         for flow in stream:
             prediction = classifier.classify(flow)
