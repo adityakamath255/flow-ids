@@ -3,7 +3,7 @@ import joblib
 import json
 import sqlite3
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue, Empty
@@ -20,10 +20,15 @@ Flow = dict[str, Any]
 Prediction = dict[str, float]
 
 
+@dataclass(frozen=True)
+class Classified:
+    flow: Flow
+    prediction: Prediction
+
+
 class FlowStream:
     def __init__(
         self,
-        idle_timeout: int,
         interface: str | None,
         pcap_file: str | None,
     ):
@@ -33,7 +38,6 @@ class FlowStream:
             input_interface=interface,
             mode="callback",
             writer=self._queue.put,
-            expired_update=idle_timeout
         )
 
     def __enter__(self) -> "FlowStream":
@@ -79,6 +83,12 @@ class Classifier:
         return dict(zip(self._classes, probs))
 
 
+def classify_stream(
+    flows: Iterable[Flow], classifier: Classifier
+) -> Iterator[Classified]:
+    return (Classified(flow, classifier.classify(flow)) for flow in flows)
+
+
 class FlowStore:
     def __init__(self, db_path: Path, source: str):
         self._source = source
@@ -98,17 +108,32 @@ class FlowStore:
                 id          INTEGER PRIMARY KEY,
                 session_id  INTEGER NOT NULL REFERENCES sessions(id),
                 recorded_at REAL    NOT NULL,
-                src_ip      TEXT,
-                dst_ip      TEXT,
-                src_port    INTEGER,
-                dst_port    INTEGER,
-                protocol    INTEGER,
-                label       TEXT    NOT NULL,
-                confidence  REAL    NOT NULL,
                 flow        TEXT    NOT NULL,
                 prediction  TEXT    NOT NULL
             )
         """)
+        self._conn.execute("""
+            CREATE VIEW IF NOT EXISTS classified_flow AS
+            SELECT
+                f.id, f.session_id, f.recorded_at,
+                json_extract(f.flow, '$.src_ip')   AS src_ip,
+                json_extract(f.flow, '$.dst_ip')   AS dst_ip,
+                json_extract(f.flow, '$.src_port') AS src_port,
+                json_extract(f.flow, '$.dst_port') AS dst_port,
+                json_extract(f.flow, '$.protocol') AS protocol,
+                (SELECT key FROM json_each(f.prediction)
+                     ORDER BY value DESC LIMIT 1) AS label,
+                (SELECT MAX(value) FROM json_each(f.prediction)) AS confidence
+            FROM flows f
+        """)
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_flows_recorded_at "
+            "ON flows(recorded_at)"
+        )
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_flows_session_id "
+            "ON flows(session_id)"
+        )
         self._conn.commit()
 
     def __enter__(self) -> "FlowStore":
@@ -128,23 +153,20 @@ class FlowStore:
         self._conn.commit()
         self._conn.close()
 
-    def record(self, flow: Flow, prediction: Prediction) -> None:
-        label = max(prediction, key=prediction.get)
-        self._conn.execute(
-            "INSERT INTO flows (session_id, recorded_at, src_ip, dst_ip, "
-            "src_port, dst_port, protocol, label, confidence, flow, prediction) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                self._session_id, time.time(),
-                flow.get("src_ip"), flow.get("dst_ip"),
-                flow.get("src_port"), flow.get("dst_port"),
-                flow.get("protocol"),
-                str(label), float(prediction[label]),
-                json.dumps(flow, default=str),
-                json.dumps({str(k): float(v) for k, v in prediction.items()}),
-            ),
-        )
-        self._conn.commit()
+    def write_all(self, classified: Iterator[Classified]) -> None:
+        for item in classified:
+            self._conn.execute(
+                "INSERT INTO flows (session_id, recorded_at, flow, prediction) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    self._session_id, time.time(),
+                    json.dumps(item.flow, default=str),
+                    json.dumps(
+                        {str(k): float(v) for k, v in item.prediction.items()}
+                    ),
+                ),
+            )
+            self._conn.commit()
 
 
 def parse_args() -> argparse.Namespace:
@@ -154,8 +176,6 @@ def parse_args() -> argparse.Namespace:
     group.add_argument("-p", "--pcap", help="Path to pcap file")
     parser.add_argument("-m", "--model-dir", default="models/", type=Path, 
                         help="Model output directory")
-    parser.add_argument("-t", "--idle-timeout", default=10, type=int,
-                        help="Expired flow update interval")
     parser.add_argument("-d", "--db", default="flows.db", type=Path,
                         help="SQLite output path")
     return parser.parse_args()
@@ -164,14 +184,16 @@ def parse_args() -> argparse.Namespace:
 def main():
     args = parse_args()
     classifier = Classifier.load(args.model_dir)
-    source = f"interface:{args.interface}" if args.interface else f"pcap:{args.pcap}"
+    source = (
+        f"interface:{args.interface}" 
+        if args.interface 
+        else f"pcap:{args.pcap}"
+    )
     with (
-        FlowStream(args.idle_timeout, args.interface, args.pcap) as stream,
+        FlowStream(args.interface, args.pcap) as stream,
         FlowStore(args.db, source) as store,
     ):
-        for flow in stream:
-            prediction = classifier.classify(flow)
-            store.record(flow, prediction)
+        store.write_all(classify_stream(stream, classifier))
 
 
 if __name__ == "__main__":

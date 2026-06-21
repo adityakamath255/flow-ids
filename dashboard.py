@@ -5,6 +5,11 @@ import streamlit as st
 
 DB_PATH = "flows.db"
 WINDOW = 2000
+BENIGN = "BENIGN"
+
+
+def is_attack(label):
+    return label != BENIGN
 
 
 @st.cache_resource
@@ -17,7 +22,7 @@ def connect() -> sqlite3.Connection:
 def recent_flows() -> pd.DataFrame:
     df = pd.read_sql_query(
         "SELECT recorded_at, src_ip, dst_ip, dst_port, protocol, label, "
-        f"confidence FROM flows ORDER BY recorded_at DESC LIMIT {WINDOW}",
+        f"confidence FROM classified_flow ORDER BY recorded_at DESC LIMIT {WINDOW}",
         connect(),
     )
     df["recorded_at"] = pd.to_datetime(df["recorded_at"], unit="s")
@@ -30,7 +35,7 @@ def throughput(df: pd.DataFrame) -> float:
 
 
 def per_second(df: pd.DataFrame) -> pd.DataFrame:
-    attack = df["label"] != "BENIGN"
+    attack = is_attack(df["label"])
     seconds = df["recorded_at"].dt.floor("s")
     counts = pd.DataFrame({"second": seconds, "attacks": attack.astype(int)})
     grouped = counts.groupby("second")["attacks"].agg(["count", "sum"])
@@ -43,8 +48,8 @@ def sessions() -> pd.DataFrame:
     df = pd.read_sql_query(
         "SELECT s.id, s.source, s.started_at, s.ended_at, "
         "COUNT(f.id) AS flows, "
-        "COALESCE(SUM(f.label != 'BENIGN'), 0) AS attacks "
-        "FROM sessions s LEFT JOIN flows f ON f.session_id = s.id "
+        f"COALESCE(SUM(f.label != '{BENIGN}'), 0) AS attacks "
+        "FROM sessions s LEFT JOIN classified_flow f ON f.session_id = s.id "
         "GROUP BY s.id ORDER BY s.id DESC",
         connect(),
     )
@@ -56,7 +61,8 @@ def sessions() -> pd.DataFrame:
 
 
 def highlight_attacks(row: pd.Series) -> list[str]:
-    style = "background-color: rgba(220,53,69,0.18)" if row["label"] != "BENIGN" else ""
+    attacked = is_attack(row["label"])
+    style = "background-color: rgba(220,53,69,0.18)" if attacked else ""
     return [style] * len(row)
 
 
@@ -67,7 +73,7 @@ def view() -> None:
         st.caption("waiting for flows...")
         return
 
-    attacks = int((df["label"] != "BENIGN").sum())
+    attacks = int(is_attack(df["label"]).sum())
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("flows (recent)", len(df))
     c2.metric("non-benign", attacks)

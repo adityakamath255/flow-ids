@@ -1,9 +1,5 @@
-*__pycache__/*
 *.pyc
-*.pkl
-logs/
+context/
 models/
 training-data/
-.claude/
-.serena/
 .venv/
