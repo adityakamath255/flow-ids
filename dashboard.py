@@ -101,10 +101,6 @@ def view() -> None:
     st.dataframe(sessions(), use_container_width=True, hide_index=True)
 
 
-def main() -> None:
-    st.set_page_config(page_title="flow-ids", layout="wide")
-    st.title("flow-ids")
-    view()
-
-
-main()
+st.set_page_config(page_title="flow-ids", layout="wide")
+st.title("flow-ids")
+view()

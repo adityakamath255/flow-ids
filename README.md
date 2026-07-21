@@ -1,6 +1,8 @@
 # flow-ids
 
-Network intrusion detection system. Sniffs live traffic or replays pcap files, extracts flow-level features, and classifies each flow with a trained XGBoost model. Results are written to a SQLite database and viewed through a real-time Streamlit dashboard.
+Network intrusion detection system. It sniffs live traffic or replays pcap
+files, extracts flow-level features, and classifies each flow with a trained
+XGBoost model. Results go to SQLite and a Streamlit dashboard reads them.
 
 ## Architecture
 
@@ -20,25 +22,26 @@ main thread ───→ Classifier (XGBoost) ───→ SQLite (flows.db)
                                           Dashboard (Streamlit, read-only)
 ```
 
-Scapy captures packets and a vendored copy of [CICFlowMeter](https://github.com/hieulw/cicflowmeter) (in `cicflowmeter/`) assembles them into bidirectional network flows with statistical features (packet lengths, inter-arrival times, flag counts, byte rates). The sniffer runs on its own thread and pushes completed flows onto a queue; the main thread pulls each flow, classifies it, and writes the result to a SQLite database.
+Scapy captures packets and a vendored copy of
+[CICFlowMeter](https://github.com/hieulw/cicflowmeter) (in `cicflowmeter/`)
+assembles them into bidirectional network flows with statistical features.
+Its `open_flows()` API owns the sniffer, session, and queue. The main thread
+iterates over completed flows, classifies them, and writes the results to
+SQLite.
 
-The dashboard is a separate Streamlit process that reads the same database read-only (the writer uses WAL mode, so reads and writes don't block each other).
+The dashboard is a separate Streamlit process with a read-only connection to
+the same database. WAL mode lets the reader and writer proceed concurrently.
 
 ## Model
 
-Trained on the [CIC-IDS2017](https://www.unb.ca/cic/datasets/ids-2017.html) dataset. The training pipeline removes duplicates, maps dataset columns to CICFlowMeter feature names, groups attack labels into 5 classes, and trains an XGBoost classifier.
+Training uses the
+[CIC-IDS2017](https://www.unb.ca/cic/datasets/ids-2017.html) dataset. The
+pipeline removes duplicates, maps dataset columns to CICFlowMeter feature
+names, groups attack labels into five classes, and trains an XGBoost
+classifier. The saved artifact contains the evaluation for its model.
 
-Per-class results on the test set (20% stratified split, 504k samples):
-
-| Class | Precision | Recall | F1 |
-|---|---|---|---|
-| BENIGN | 99.97% | 99.93% | 99.95% |
-| DDOS | 99.99% | 100.00% | 99.99% |
-| DOS | 99.81% | 99.95% | 99.88% |
-| BRUTE-FORCE | 99.89% | 99.84% | 99.86% |
-| RECON | 98.79% | 99.42% | 99.11% |
-
-CIC-IDS2017 is synthetic traffic generated in a controlled environment. Real-world performance will differ.
+CIC-IDS2017 is synthetic traffic generated in a controlled environment.
+Real-world performance will differ.
 
 ## Setup
 
@@ -50,9 +53,13 @@ cd flow-ids
 uv sync
 ```
 
-`uv sync` creates `.venv/` and installs the exact dependency versions pinned in `uv.lock` and the Python version pinned in `.python-version`. Run commands with `uv run` (e.g. `uv run python3 main.py ...`) or activate the venv with `source .venv/bin/activate`.
+`uv sync` creates `.venv/` and installs the dependency versions in `uv.lock`
+and the Python version in `.python-version`. Run commands with `uv run` or
+activate the venv with `source .venv/bin/activate`.
 
-For live capture, the venv Python binary needs packet capture capabilities. `uv` symlinks the venv interpreter to the base Python, so first replace that symlink with a private copy, then grant the capability to the copy (this avoids modifying the shared interpreter):
+For live capture, the venv Python binary needs packet capture capabilities.
+`uv` symlinks the venv interpreter to the base Python. Replace that symlink
+with a private copy, then grant the capability to the copy:
 
 ```bash
 cp --remove-destination "$(readlink -f .venv/bin/python3)" .venv/bin/python3
@@ -75,7 +82,8 @@ Pcap replay:
 uv run python3 main.py -p <file.pcap>
 ```
 
-Either command writes classified flows to `flows.db`. In a second terminal, start the dashboard:
+Either command writes classified flows to `flows.db`. Start the dashboard in
+a second terminal:
 
 ```bash
 uv run streamlit run dashboard.py
@@ -98,9 +106,9 @@ Place the CIC-IDS2017 CSV files in `training-data/MachineLearningCVE/`, then:
 uv run python3 train.py
 ```
 
-This writes `model.json`, `encoder.pkl`, and `metrics.json` to `models/`.
-Training configuration (feature mapping, class grouping, XGBoost
-hyperparameters) is at the top of `train.py`.
+This atomically writes `models/artifacts.zip`. The archive contains the model,
+label encoder, and evaluation metrics. Training configuration is in `train.py`;
+the CIC-IDS2017 column contract is in `cicflowmeter/schema.py`.
 
 ## Tests
 
