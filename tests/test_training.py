@@ -48,6 +48,7 @@ class TrainingDataTests(unittest.TestCase):
             artifacts = ModelArtifacts(Path(directory))
             artifacts.save(model, encoder, {"score": 1.0})
             loaded = artifacts.load()
+            saved_files = {path.name for path in Path(directory).iterdir()}
 
         self.assertEqual(model.predict_proba(features).shape, (10, 2))
         self.assertEqual(
@@ -55,6 +56,8 @@ class TrainingDataTests(unittest.TestCase):
             ("flow_duration", "tot_fwd_pkts"),
         )
         self.assertEqual(loaded.classes, ("BENIGN", "DOS"))
+        self.assertEqual(loaded.metrics, {"score": 1.0})
+        self.assertEqual(saved_files, {"artifacts.zip"})
 
 
 if __name__ == "__main__":

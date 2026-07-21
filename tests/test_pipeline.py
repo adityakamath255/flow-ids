@@ -9,14 +9,16 @@ import numpy as np
 from scapy.layers.inet import IP, TCP
 from scapy.utils import wrpcap
 
+from cicflowmeter import PcapSource
+from cicflowmeter.schema import CIC_IDS_2017_COLUMNS
 from flow_database import (
     Classified,
     RECENT_FLOWS_QUERY,
     SESSIONS_QUERY,
     open_flow_store,
 )
-from main import Classifier, Config, PcapSource, run
-from train import DROP_FEATURES, FEATURE_MAPPING
+from main import Classifier, Config, run
+from train import DROP_FEATURES
 
 
 class StubModel:
@@ -74,7 +76,9 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(stored_flow["tot_bwd_pkts"], 2)
         self.assertEqual(stored_flow["flow_iat_mean"], 250_000)
         self.assertEqual(stored_flow["flow_duration"], 1_000_000)
-        expected_features = set(FEATURE_MAPPING.values()) - set(DROP_FEATURES)
+        expected_features = set(CIC_IDS_2017_COLUMNS.values()) - set(
+            DROP_FEATURES
+        )
         self.assertLessEqual(expected_features, stored_flow.keys())
         self.assertEqual(session[1], f"pcap:{pcap_path}")
         self.assertIsNotNone(session[3])
