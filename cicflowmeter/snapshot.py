@@ -7,12 +7,6 @@ from .bulk import BulkSnapshot
 from .features.context import FlowKey, PacketDirection
 
 
-def packet_payload_length(packet: Packet) -> int:
-    if "TCP" in packet:
-        return len(packet["TCP"].payload)
-    return len(packet["UDP"].payload)
-
-
 @dataclass(frozen=True, slots=True)
 class PacketSnapshot:
     timestamp: float
@@ -41,12 +35,13 @@ class PacketSnapshot:
         if IP in packet:
             header_length = (packet[IP].ihl or 5) * 4
 
+        transport = "TCP" if tcp is not None else "UDP"
         return cls(
             timestamp=float(packet.time),
             direction=direction,
             length=len(packet),
             header_length=header_length,
-            payload_length=packet_payload_length(packet),
+            payload_length=len(packet[transport].payload),
             tcp_flags=tcp_flags,
             tcp_window=tcp_window,
         )

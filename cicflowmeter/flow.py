@@ -1,5 +1,3 @@
-from collections.abc import Collection
-
 from scapy.packet import Packet
 
 from . import constants
@@ -10,27 +8,18 @@ from .features.flow_bytes import FlowBytes
 from .features.packet_count import PacketCount
 from .features.packet_length import PacketLength
 from .features.packet_time import PacketTime
-from .snapshot import FlowSnapshot, PacketSnapshot, packet_payload_length
+from .schema import FEATURE_ALIASES, FlowData
+from .snapshot import FlowSnapshot, PacketSnapshot
 from .termination import TcpTermination
-from .utils import get_statistics
-from .writer import FlowValue
+from .statistics import get_statistics
 
 MICROSECONDS_PER_SECOND = 1_000_000
-FEATURE_ALIASES = (
-    ("fwd_seg_size_avg", "fwd_pkt_len_mean"),
-    ("bwd_seg_size_avg", "bwd_pkt_len_mean"),
-    ("subflow_fwd_pkts", "tot_fwd_pkts"),
-    ("subflow_bwd_pkts", "tot_bwd_pkts"),
-    ("subflow_fwd_byts", "totlen_fwd_pkts"),
-    ("subflow_bwd_byts", "totlen_bwd_pkts"),
-)
 
 
 class Flow:
     __slots__ = (
         "_key",
         "_packets",
-        "_start_timestamp",
         "_latest_timestamp",
         "_bulk",
         "_termination",
@@ -43,18 +32,14 @@ class Flow:
         key: FlowKey,
     ) -> None:
         self._key = key
-        self._packets = [(packet, direction)]
-        timestamp = float(packet.time)
-        self._start_timestamp = timestamp
-        self._latest_timestamp = timestamp
+        snapshot = PacketSnapshot.from_packet(packet, direction)
+        self._packets = [snapshot]
+        self._latest_timestamp = snapshot.timestamp
         self._bulk = BulkTracker()
         self._termination = TcpTermination()
-        self._record_packet_state(packet, direction, timestamp)
+        self._record_packet_state(packet, snapshot)
 
-    def get_data(
-        self,
-        include_fields: Collection[str] | None = None,
-    ) -> dict[str, FlowValue]:
+    def get_data(self) -> FlowData:
         snapshot = self._snapshot()
         flow_bytes = FlowBytes(snapshot)
         flag_count = FlagCount(snapshot)
@@ -78,7 +63,7 @@ class Flow:
         idle_stat = get_statistics(idle, MICROSECONDS_PER_SECOND)
         forward_window, reverse_window = self._initial_window_sizes(snapshot)
 
-        data: dict[str, FlowValue] = {
+        data = {
             "src_ip": snapshot.key.src_ip,
             "dst_ip": snapshot.key.dst_ip,
             "src_port": snapshot.key.src_port,
@@ -175,35 +160,34 @@ class Flow:
 
         data.update({alias: data[source] for alias, source in FEATURE_ALIASES})
 
-        if include_fields is not None:
-            data = {k: v for k, v in data.items() if k in include_fields}
-
         return data
 
     def add_packet(self, packet: Packet, direction: PacketDirection) -> None:
-        timestamp = float(packet.time)
-        self._packets.append((packet, direction))
-        self._latest_timestamp = max(timestamp, self._latest_timestamp)
-        self._record_packet_state(packet, direction, timestamp)
+        snapshot = PacketSnapshot.from_packet(packet, direction)
+        self._packets.append(snapshot)
+        self._latest_timestamp = max(
+            snapshot.timestamp,
+            self._latest_timestamp,
+        )
+        self._record_packet_state(packet, snapshot)
 
     def _record_packet_state(
         self,
         packet: Packet,
-        direction: PacketDirection,
-        timestamp: float,
+        snapshot: PacketSnapshot,
     ) -> None:
-        payload_size = packet_payload_length(packet)
-        if payload_size:
-            self._bulk.observe(direction, payload_size, timestamp)
-        self._termination.observe(packet, direction)
+        if snapshot.payload_length:
+            self._bulk.observe(
+                snapshot.direction,
+                snapshot.payload_length,
+                snapshot.timestamp,
+            )
+        self._termination.observe(packet, snapshot.direction)
 
     def _snapshot(self) -> FlowSnapshot:
         return FlowSnapshot(
             key=self._key,
-            packets=tuple(
-                PacketSnapshot.from_packet(packet, direction)
-                for packet, direction in self._packets
-            ),
+            packets=tuple(self._packets),
             bulk=self._bulk.snapshot(),
         )
 
@@ -228,7 +212,7 @@ class Flow:
 
     @property
     def duration(self) -> float:
-        return self._latest_timestamp - self._start_timestamp
+        return self._latest_timestamp - self._packets[0].timestamp
 
     @property
     def latest_timestamp(self) -> float:

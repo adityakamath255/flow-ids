@@ -1,43 +1,32 @@
+import logging
 import threading
 import time
-from collections.abc import Collection
+from collections.abc import Callable
 
 from scapy.packet import Packet
-from scapy.sessions import DefaultSession
 
 from .constants import EXPIRED_UPDATE, FLOW_DURATION_TIMEOUT, PACKETS_PER_GC
 from .features.context import FlowKey, PacketDirection, packet_flow_key
 from .flow import Flow
-from .utils import get_logger
-from .writer import Output, open_output
+from .schema import FlowData
+
+LOGGER = logging.getLogger(__name__)
 
 
-class FlowSession(DefaultSession):
+class FlowSession:
     def __init__(
         self,
-        *args,
-        output: Output,
-        fields: str | Collection[str] | None = None,
-        verbose: bool = False,
+        emit: Callable[[FlowData], None],
         expired_update: float = EXPIRED_UPDATE,
-        **kwargs,
     ) -> None:
-        super().__init__(*args, **kwargs)
         if expired_update <= 0:
             raise ValueError("Flow expiry must be positive")
         self._flows: dict[FlowKey, Flow] = {}
         self._expired_update = expired_update
-        if isinstance(fields, str):
-            self._fields = tuple(field.strip() for field in fields.split(","))
-        elif fields is None:
-            self._fields = None
-        else:
-            self._fields = tuple(fields)
-        self._logger = get_logger(verbose)
+        self._emit = emit
         self._packets_count = 0
-        self._output_writer = open_output(output)
         self._flows_lock = threading.Lock()
-        self._writer_lock = threading.Lock()
+        self._emit_lock = threading.Lock()
         self._gc_stop = threading.Event()
         self._gc_thread: threading.Thread | None = None
         self._closed = False
@@ -62,7 +51,7 @@ class FlowSession(DefaultSession):
             try:
                 self.garbage_collect(time.time())
             except Exception:
-                self._logger.exception("Periodic flow collection failed")
+                LOGGER.exception("Periodic flow collection failed")
 
     def process(self, pkt: Packet) -> None:
         if "TCP" not in pkt and "UDP" not in pkt:
@@ -71,7 +60,7 @@ class FlowSession(DefaultSession):
         try:
             key = packet_flow_key(pkt)
         except (AttributeError, IndexError, KeyError, TypeError, ValueError):
-            self._logger.debug("Ignored malformed packet", exc_info=True)
+            LOGGER.debug("Ignored malformed packet", exc_info=True)
             return
 
         timestamp = float(pkt.time)
@@ -129,11 +118,11 @@ class FlowSession(DefaultSession):
         self._write(completed)
 
     def _write(self, flows: list[Flow]) -> None:
-        with self._writer_lock:
+        with self._emit_lock:
             for flow in flows:
-                self._output_writer.write(flow.get_data(self._fields))
+                self._emit(flow.get_data())
 
-    def flush_flows(self) -> None:
+    def _flush_flows(self) -> None:
         with self._flows_lock:
             completed = list(self._flows.values())
             self._flows.clear()
@@ -146,12 +135,9 @@ class FlowSession(DefaultSession):
         self._gc_stop.set()
         if self._gc_thread is not None:
             self._gc_thread.join()
-        try:
-            self.flush_flows()
-        finally:
-            self._output_writer.close()
+        self._flush_flows()
 
-    def __enter__(self):
+    def __enter__(self) -> "FlowSession":
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:

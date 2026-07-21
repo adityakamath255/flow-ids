@@ -1,11 +1,15 @@
+import csv
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from scapy.layers.inet import IP, TCP, UDP
 from scapy.packet import Raw
+from scapy.utils import wrpcap
 
+from cicflowmeter.cli import parse_args, run
 from cicflowmeter.features.context import packet_flow_key
 from cicflowmeter.flow_session import FlowSession
-from cicflowmeter.writer import CallbackOutput
 
 REPRESENTATIVE_FLOW = (
     (0.0, False, "S", 1000, 0),
@@ -75,7 +79,7 @@ class FlowIdentityTests(unittest.TestCase):
 class FlowFeatureTests(unittest.TestCase):
     def test_flow_closes_after_both_fins_and_final_ack(self) -> None:
         output = []
-        session = FlowSession(output=CallbackOutput(output.append))
+        session = FlowSession(emit=output.append)
 
         session.process(flow_packet(0, flags="S"))
         session.process(flow_packet(0.1, flags="FA"))
@@ -89,7 +93,7 @@ class FlowFeatureTests(unittest.TestCase):
 
     def test_feature_views_preserve_cic_values(self) -> None:
         output = []
-        with FlowSession(output=CallbackOutput(output.append)) as session:
+        with FlowSession(emit=output.append) as session:
             for spec in REPRESENTATIVE_FLOW:
                 session.process(flow_packet(*spec))
 
@@ -108,6 +112,34 @@ class FlowFeatureTests(unittest.TestCase):
         self.assertAlmostEqual(flow["active_max"], 1_100_000)
         self.assertAlmostEqual(flow["active_min"], 300_000)
         self.assertAlmostEqual(flow["idle_mean"], 5_900_000)
+
+
+class CliTests(unittest.TestCase):
+    def test_replay_projects_requested_csv_fields(self) -> None:
+        with TemporaryDirectory() as directory:
+            pcap_path = Path(directory) / "flow.pcap"
+            csv_path = Path(directory) / "flows.csv"
+            wrpcap(str(pcap_path), [flow_packet(0, flags="S")])
+
+            run(
+                parse_args(
+                    [
+                        "--file",
+                        str(pcap_path),
+                        "--fields",
+                        "src_ip,dst_port",
+                        str(csv_path),
+                    ]
+                )
+            )
+
+            with csv_path.open(newline="", encoding="utf-8") as output:
+                rows = list(csv.DictReader(output))
+
+        self.assertEqual(
+            rows,
+            [{"src_ip": "10.0.0.1", "dst_port": "80"}],
+        )
 
 
 if __name__ == "__main__":

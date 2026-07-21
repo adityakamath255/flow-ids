@@ -13,7 +13,6 @@ from flow_database import (
     Classified,
     RECENT_FLOWS_QUERY,
     SESSIONS_QUERY,
-    initialize,
     open_flow_store,
 )
 from main import Classifier, Config, PcapSource, run
@@ -82,29 +81,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(session[4:], (1, 1))
 
 
-class DatabaseMigrationTests(unittest.TestCase):
-    def test_preserves_old_session_end_times(self) -> None:
-        connection = sqlite3.connect(":memory:")
-        connection.executescript(
-            """
-            CREATE TABLE sessions (
-                id INTEGER PRIMARY KEY,
-                source TEXT NOT NULL,
-                started_at REAL NOT NULL,
-                ended_at REAL
-            );
-            INSERT INTO sessions VALUES (1, 'old', 10, 20);
-            """
-        )
-
-        initialize(connection)
-        ended_at = connection.execute(
-            "SELECT ended_at FROM session_ends WHERE session_id = 1"
-        ).fetchone()[0]
-        connection.close()
-
-        self.assertEqual(ended_at, 20)
-
+class DatabaseTests(unittest.TestCase):
     def test_rejects_non_finite_json(self) -> None:
         with TemporaryDirectory() as directory:
             db_path = Path(directory) / "flows.db"

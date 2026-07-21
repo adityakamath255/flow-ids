@@ -93,14 +93,6 @@ class Classified:
 
 def initialize(connection: sqlite3.Connection) -> None:
     connection.executescript(SCHEMA)
-    session_columns = {
-        row[1] for row in connection.execute("PRAGMA table_info(sessions)")
-    }
-    if "ended_at" in session_columns:
-        connection.execute(
-            "INSERT OR IGNORE INTO session_ends (session_id, ended_at) "
-            "SELECT id, ended_at FROM sessions WHERE ended_at IS NOT NULL"
-        )
     connection.commit()
 
 

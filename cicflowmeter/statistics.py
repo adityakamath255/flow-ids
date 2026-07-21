@@ -1,4 +1,3 @@
-import logging
 from collections.abc import Iterable
 from math import sqrt
 from typing import NamedTuple
@@ -10,14 +9,6 @@ class Statistics(NamedTuple):
     minimum: float
     mean: float
     standard_deviation: float
-
-
-def get_logger(debug: bool = False) -> logging.Logger:
-    logger = logging.getLogger("cicflowmeter")
-    if not logger.hasHandlers():
-        logging.basicConfig()
-    logger.setLevel(logging.DEBUG if debug else logging.WARNING)
-    return logger
 
 
 def get_statistics(
