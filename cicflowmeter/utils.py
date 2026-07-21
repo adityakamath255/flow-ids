@@ -29,20 +29,15 @@ def random_string():
 
 def get_statistics(alist: list):
     """Get summary statistics of a list"""
-    iat = dict()
     alist = [float(x) for x in alist]
 
-    if len(alist) > 1:
-        iat["total"] = sum(alist)
-        iat["max"] = max(alist)
-        iat["min"] = min(alist)
-        iat["mean"] = numpy.mean(alist)
-        iat["std"] = numpy.sqrt(numpy.var(alist))
-    else:
-        iat["total"] = 0
-        iat["max"] = 0
-        iat["min"] = 0
-        iat["mean"] = 0
-        iat["std"] = 0
+    if not alist:
+        return {"total": 0, "max": 0, "min": 0, "mean": 0, "std": 0}
 
-    return iat
+    return {
+        "total": sum(alist),
+        "max": max(alist),
+        "min": min(alist),
+        "mean": numpy.mean(alist),
+        "std": numpy.sqrt(numpy.var(alist)),
+    }

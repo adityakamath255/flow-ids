@@ -15,7 +15,7 @@ class FlagCount:
     def __init__(self, flow):
         self.flow = flow
 
-    def count(self, flag, packet_direction=None) -> bool:
+    def count(self, flag, packet_direction=None) -> int:
         """Count packets by direction.
 
         Returns:

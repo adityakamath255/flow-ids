@@ -27,6 +27,7 @@ class ResponseTime:
             if (
                 temp_direction == PacketDirection.FORWARD
                 and direction == PacketDirection.REVERSE
+                and temp_packet is not None
             ):
                 diff = packet.time - temp_packet.time
                 time_diff.append(float(diff))
@@ -45,7 +46,7 @@ class ResponseTime:
         if len(self.get_dif()) != 0:
             var = numpy.var(self.get_dif())
 
-        return var
+        return float(var)
 
     def get_mean(self) -> float:
         """Calculates the mean of the list of time differences.
@@ -58,7 +59,7 @@ class ResponseTime:
         if len(self.get_dif()) != 0:
             mean = numpy.mean(self.get_dif())
 
-        return mean
+        return float(mean)
 
     def get_median(self) -> float:
         """Calculates the median of the list of time differences
@@ -136,7 +137,7 @@ class ResponseTime:
         return std
 
     def get_cov(self) -> float:
-        """Calculates the coefficient of variance of the list of time differences
+        """Calculates the coefficient of variance of response times.
 
         Note:
             return -1 if division by 0.

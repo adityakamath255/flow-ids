@@ -1,12 +1,17 @@
+from collections.abc import Sequence
+from datetime import datetime
+from pathlib import Path
+from typing import cast
+
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder
-from sklearn.model_selection import train_test_split
 import xgboost as xgb
-from sklearn.metrics import classification_report
-from pathlib import Path
-import joblib
-from datetime import datetime
+from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
+from sklearn.utils.class_weight import compute_sample_weight
+
+from model_artifacts import ModelArtifacts
 
 HERE = Path(__file__).resolve().parent
 DATASET_DIR = HERE / "training-data/MachineLearningCVE"
@@ -14,25 +19,41 @@ OUTPUT_DIR = HERE / "models"
 RANDOM_STATE = 42
 TEST_SIZE = 0.2
 
-# drop web attacks and advanced exploits
+DROP_FEATURES = [
+    # host/topology fingerprints
+    "dst_port",
+    "init_fwd_win_byts",
+    "init_bwd_win_byts",
+    # exact duplicate of fwd_header_len in the source CSVs
+    "fwd_header_len.1",
+    # constant across the dataset (bulk counters never populated)
+    "bwd_psh_flags",
+    "bwd_urg_flags",
+    "fwd_byts_b_avg",
+    "fwd_pkts_b_avg",
+    "fwd_blk_rate_avg",
+    "bwd_byts_b_avg",
+    "bwd_pkts_b_avg",
+    "bwd_blk_rate_avg",
+]
+
+# drop web attacks and advanced exploits (absent classes drop out via the map)
 CLASS_GROUPS = {
     "BENIGN": ["BENIGN"],
     "DDOS": ["DDOS"],
     "DOS": ["DOS HULK", "DOS GOLDENEYE", "DOS SLOWLORIS", "DOS SLOWHTTPTEST"],
     "RECON": ["PORTSCAN", "BOT"],
-    "BRUTE-FORCE": ["SSH-PATATOR", "FTP-PATATOR"]
+    "BRUTE-FORCE": ["SSH-PATATOR", "FTP-PATATOR"],
 }
 
 XGBOOST_PARAMS = {
-    'n_estimators': 100,
-    'max_depth': 8,
-    'learning_rate': 0.1,
-    'objective': 'multi:softprob',
-    'subsample': 0.8,
-    'colsample_bytree': 0.8,
-    'random_state': RANDOM_STATE,
-    'n_jobs': -1,
-    'eval_metric': 'mlogloss'
+    "n_estimators": 100,
+    "max_depth": 8,
+    "learning_rate": 0.1,
+    "subsample": 0.8,
+    "colsample_bytree": 0.8,
+    "random_state": RANDOM_STATE,
+    "n_jobs": -1,
 }
 
 FEATURE_MAPPING: dict[str, str] = {
@@ -117,130 +138,118 @@ FEATURE_MAPPING: dict[str, str] = {
 }
 
 
-def load_data():
-    csv_files = DATASET_DIR.glob("*.csv")
-
-    dfs = (
+def load_data() -> pd.DataFrame:
+    files = sorted(DATASET_DIR.glob("*.csv"))
+    if not files:
+        raise FileNotFoundError(f"No CSV files found in {DATASET_DIR}")
+    frames = (
         pd.read_csv(f, encoding="utf-8", encoding_errors="replace")
-        for f in csv_files
-        if f.name != "Thursday-WorkingHours-Afternoon-Infilteration.pcap_ISCX.csv"
-        # mostly duplicate data, based on the lycos analysis
+        for f in files
     )
-
-    result = pd.concat(dfs, ignore_index=True)
-    result.columns = result.columns.str.strip()
-    return result
-
-
-def clean_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
-    df = df.drop_duplicates().rename(columns=FEATURE_MAPPING)
-
-    return (
-        df.drop(columns=["Label"]).replace([np.inf, -np.inf], np.nan),
-        df["Label"].str.strip().str.upper()
-    )
+    df = pd.concat(frames, ignore_index=True)
+    df.columns = df.columns.str.strip()
+    return df.rename(columns=FEATURE_MAPPING)
 
 
-def group_classes(
-    X: pd.DataFrame, 
-    y: pd.Series
-) -> tuple[pd.DataFrame, pd.Series]:
+def prepare(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
+    df = df.drop_duplicates()
+
     label_to_group = {
         cls: group
         for group, classes in CLASS_GROUPS.items()
         for cls in classes
     }
-    y = y.map(label_to_group).dropna()
-    X = X.loc[y.index]
-    return X, y
+    y = df["Label"].str.strip().str.upper().map(label_to_group)
+    grouped = y.notna()
 
-
-def split_data(
-    X: pd.DataFrame, 
-    y: pd.Series
-) -> list:
-    return train_test_split(
-        X, y,
-        test_size=TEST_SIZE,
-        random_state=RANDOM_STATE,
-        stratify=y
+    X = (
+        df.loc[grouped]
+        .drop(columns=["Label", *DROP_FEATURES], errors="ignore")
+        .replace([np.inf, -np.inf], np.nan)
     )
+    return X, y[grouped]
 
 
-def encode_labels(
-    y_train: pd.Series,
-    y_test: pd.Series
-) -> tuple[np.ndarray, np.ndarray, LabelEncoder]:
-    encoder = LabelEncoder()
-    y_train_encoded = encoder.fit_transform(y_train)
-    y_test_encoded = encoder.transform(y_test)
-
-    return y_train_encoded, y_test_encoded, encoder
-
-
-def train_xgboost(
-    X_train: pd.DataFrame,
-    y_train: np.ndarray,
-) -> xgb.XGBClassifier:
+def train(X: pd.DataFrame, y: np.ndarray) -> xgb.XGBClassifier:
     model = xgb.XGBClassifier(**XGBOOST_PARAMS)
-    model.fit(X_train, y_train)
+    model.fit(X, y, sample_weight=compute_sample_weight("balanced", y))
     return model
 
 
-def evaluate_model(
+def evaluate(
     model: xgb.XGBClassifier,
-    X_test: pd.DataFrame,
-    y_test: np.ndarray,
-    encoder: LabelEncoder
-):
-    y_pred = model.predict(X_test)
-    print(classification_report(
-        y_test,
-        y_pred,
-        target_names=encoder.classes_,
-        digits=4
-    ))
+    splits: list[tuple[str, pd.DataFrame, np.ndarray]],
+    labels: Sequence[str],
+) -> dict:
+    metrics: dict = {"labels": list(labels)}
+    label_ids = np.arange(len(labels))
+    for name, X, y in splits:
+        pred = model.predict(X)
+        print(f"\n== {name} ==")
+        print(
+            classification_report(
+                y,
+                pred,
+                labels=label_ids,
+                target_names=labels,
+                digits=4,
+            )
+        )
+        metrics[name] = {
+            "report": classification_report(
+                y,
+                pred,
+                labels=label_ids,
+                target_names=labels,
+                output_dict=True,
+            ),
+            "confusion_matrix": confusion_matrix(
+                y, pred, labels=label_ids
+            ).tolist(),
+        }
+    return metrics
 
 
-def save_artifacts(
-    model: xgb.XGBClassifier,
-    encoder: LabelEncoder,
-    output_dir: Path
-):
-    output_dir.mkdir(parents=True, exist_ok=True)
-    model.save_model(output_dir / "model.json")
-    joblib.dump(encoder, output_dir / "encoder.pkl")
-
-
-def main():
-    def log(msg: str):
+def main() -> None:
+    def log(msg: str) -> None:
         print(f"[{datetime.now():%H:%M:%S}] {msg}")
 
     log("Loading data...")
     df = load_data()
 
-    log("Cleaning data...")
-    X, y = clean_data(df)
+    log("Preparing features...")
+    X, y = prepare(df)
+    log(f"{len(X)} flows, {X.shape[1]} features, {y.nunique()} classes")
 
-    log("Grouping classes...")
-    X, y = group_classes(X, y)
+    X_train, X_test, y_train, y_test = cast(
+        tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series],
+        train_test_split(
+            X,
+            y,
+            test_size=TEST_SIZE,
+            random_state=RANDOM_STATE,
+            stratify=y,
+        ),
+    )
 
-    log("Splitting data...")
-    X_train, X_test, y_train, y_test = split_data(X, y)
+    encoder = LabelEncoder().fit(y)
+    classes = cast(np.ndarray, encoder.classes_)
+    y_train_enc = encoder.transform(y_train)
+    y_test_enc = encoder.transform(y_test)
 
-    log("Encoding labels...")
-    y_train_encoded, y_test_encoded, encoder = encode_labels(y_train, y_test)
+    log("Training...")
+    model = train(X_train, y_train_enc)
 
-    log("Training model...")
-    model = train_xgboost(X_train, y_train_encoded)
-
-    log("Evaluating model...")
-    evaluate_model(model, X_test, y_test_encoded, encoder)
+    log("Evaluating...")
+    metrics = evaluate(
+        model,
+        [("train", X_train, y_train_enc), ("test", X_test, y_test_enc)],
+        [str(label) for label in classes],
+    )
 
     log("Saving artifacts...")
-    save_artifacts(model, encoder, OUTPUT_DIR)
-
-    log("Pipeline complete!")
+    ModelArtifacts(OUTPUT_DIR).save(model, encoder, metrics)
+    log("Done.")
 
 
 if __name__ == "__main__":

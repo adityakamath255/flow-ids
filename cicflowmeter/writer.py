@@ -1,54 +1,61 @@
 import csv
+import logging
 from typing import Protocol
 
 import requests
 
+LOGGER = logging.getLogger("cicflowmeter")
+
 
 class OutputWriter(Protocol):
-    def write(self, data: dict) -> None:
-        raise NotImplementedError
+    def write(self, data: dict) -> None: ...
+
+    def close(self) -> None: ...
 
 
 class CSVWriter(OutputWriter):
     def __init__(self, output_file) -> None:
-        self.file = open(output_file, "w")
-        self.line = 0
-        self.writer = csv.writer(self.file)
+        self._file = open(output_file, "w", encoding="utf-8", newline="")
+        self._header_written = False
+        self._writer = csv.writer(self._file)
 
     def write(self, data: dict) -> None:
-        if self.line == 0:
-            self.writer.writerow(data.keys())
+        if not self._header_written:
+            self._writer.writerow(data.keys())
+            self._header_written = True
 
-        self.writer.writerow(data.values())
-        self.file.flush()
-        self.line += 1
+        self._writer.writerow(data.values())
+        self._file.flush()
 
-    def __del__(self):
-        self.file.close()
+    def close(self) -> None:
+        self._file.close()
 
 
 class HttpWriter(OutputWriter):
     def __init__(self, output_url) -> None:
-        self.url = output_url
-        self.session = requests.Session()
+        self._url = output_url
+        self._session = requests.Session()
 
-    def write(self, data):
+    def write(self, data: dict) -> None:
         try:
-            resp = self.session.post(self.url, json=data, timeout=5)
-            resp.raise_for_status()  # raise if not 2xx
-        except Exception:
-            self.logger.exception("HTTPWriter failed posting flow")
+            response = self._session.post(self._url, json=data, timeout=5)
+            response.raise_for_status()
+        except requests.RequestException:
+            LOGGER.exception("Failed to post flow")
 
-    def __del__(self):
-        self.session.close()
+    def close(self) -> None:
+        self._session.close()
 
 
 class CallbackWriter(OutputWriter):
     def __init__(self, callback) -> None:
-        self.callback = callback
+        self._callback = callback
 
     def write(self, data: dict) -> None:
-        self.callback(data)
+        self._callback(data)
+
+    def close(self) -> None:
+        pass
 
 
 def output_writer_factory(mode, writer) -> OutputWriter:

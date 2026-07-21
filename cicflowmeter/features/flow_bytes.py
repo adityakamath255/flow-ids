@@ -20,7 +20,7 @@ class FlowBytes:
         return sum(len(packet) for packet, _ in self.flow.packets)
 
     def get_rate(self) -> float:
-        """Calculates the rate of the bytes being transfered in the current flow.
+        """Calculates the byte rate for the current flow.
 
         Returns:
             float: The bytes/sec sent.
@@ -36,7 +36,7 @@ class FlowBytes:
         return rate
 
     def get_bytes_sent(self) -> int:
-        """Calculates the amount bytes sent from the machine being used to run DoHlyzer.
+        """Calculates the bytes sent in the forward direction.
 
         Returns:
             int: The amount of bytes.
@@ -98,7 +98,7 @@ class FlowBytes:
         return rate
 
     def get_forward_header_bytes(self) -> int:
-        """Calculates the amount of header bytes in the header sent in the same direction as the flow.
+        """Calculates forward header bytes.
 
         Returns:
             int: The amount of bytes.
@@ -110,7 +110,7 @@ class FlowBytes:
             if direction == PacketDirection.FORWARD
         )
 
-    def get_forward_rate(self) -> int:
+    def get_forward_rate(self) -> float:
         """Calculates the rate of the bytes being going forward
         in the current flow.
 
@@ -132,10 +132,8 @@ class FlowBytes:
         # Calculate IP header size if IP layer exists
         if IP in packet:
             ihl = packet[IP].ihl
-            # Handle case where ihl might be None (though ideally shouldn't happen with proper packet construction)
             if ihl is None:
-                # Default to 20 bytes (standard IPv4 header without options)
-                # TODO: Consider logging a warning here
+                # IPv4 without options has a 20-byte header.
                 return 20
             else:
                 return ihl * 4
@@ -144,7 +142,7 @@ class FlowBytes:
             return 0
 
     def get_reverse_header_bytes(self) -> int:
-        """Calculates the amount of header bytes in the header sent in the opposite direction as the flow.
+        """Calculates reverse header bytes.
 
         Returns:
             int: The amount of bytes.
@@ -160,7 +158,7 @@ class FlowBytes:
         )
 
     def get_min_forward_header_bytes(self) -> int:
-        """Calculates the amount of header bytes in the header sent in the opposite direction as the flow.
+        """Calculates the minimum forward header size.
 
         Returns:
             int: The amount of bytes.
@@ -177,7 +175,7 @@ class FlowBytes:
 
         return min(fwd_header_sizes) if fwd_header_sizes else 0
 
-    def get_reverse_rate(self) -> int:
+    def get_reverse_rate(self) -> float:
         """Calculates the rate of the bytes being going reverse
         in the current flow.
 
@@ -223,46 +221,10 @@ class FlowBytes:
         return [packet["IP"].ttl for packet, _ in self.flow.packets][0]
 
     def get_bytes_per_bulk(self, direction: PacketDirection) -> float:
-        """Calculates packet bytes per bulk
-
-        Returns:
-            float: bytes per bulk ratio.
-
-        """
-        if direction is PacketDirection.FORWARD and self.flow.forward_bulk_count != 0:
-            return self.flow.forward_bulk_size / self.flow.forward_bulk_count
-        if direction is PacketDirection.REVERSE and self.flow.backward_bulk_count != 0:
-            return self.flow.backward_bulk_size / self.flow.backward_bulk_count
-        return 0
+        return self.flow.bulk.bytes_per_bulk(direction)
 
     def get_packets_per_bulk(self, direction: PacketDirection) -> float:
-        """Calculates number of packets per bulk
-
-        Returns:
-            float: number of packets per bulk ratio.
-
-        """
-        if direction is PacketDirection.FORWARD and self.flow.forward_bulk_count != 0:
-            return self.flow.forward_bulk_packet_count / self.flow.forward_bulk_count
-        if direction is PacketDirection.REVERSE and self.flow.backward_bulk_count != 0:
-            return self.flow.backward_bulk_packet_count / self.flow.backward_bulk_count
-        return 0
+        return self.flow.bulk.packets_per_bulk(direction)
 
     def get_bulk_rate(self, direction: PacketDirection) -> float:
-        """Calculates bulk rate
-
-        Returns:
-            float: bulk size per seconds.
-
-        """
-        if (
-            direction is PacketDirection.FORWARD
-            and self.flow.forward_bulk_duration != 0
-        ):
-            return self.flow.forward_bulk_size / self.flow.forward_bulk_duration
-        if (
-            direction is PacketDirection.REVERSE
-            and self.flow.backward_bulk_duration != 0
-        ):
-            return self.flow.backward_bulk_size / self.flow.backward_bulk_duration
-        return 0
+        return self.flow.bulk.rate(direction)

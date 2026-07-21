@@ -55,12 +55,12 @@ class PacketCount:
         return 0
 
     @staticmethod
-    def get_payload(packet):
+    def get_payload(packet) -> bytes:
         if "TCP" in packet:
-            return packet["TCP"].payload
-        elif "UDP" in packet:
-            return packet["UDP"].payload
-        return 0
+            return bytes(packet["TCP"].payload)
+        if "UDP" in packet:
+            return bytes(packet["UDP"].payload)
+        return b""
 
     def has_payload(self, packet_direction=None) -> int:
         """Count packet has payload.

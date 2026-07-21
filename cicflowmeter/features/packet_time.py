@@ -25,7 +25,8 @@ class PacketTime:
             return self.packet_times
         first_packet_time = self.flow.packets[0][0].time
         packet_times = [
-            float(packet.time - first_packet_time) for packet, _ in self.flow.packets
+            float(packet.time - first_packet_time)
+            for packet, _ in self.flow.packets
         ]
         return packet_times
 
@@ -40,7 +41,8 @@ class PacketTime:
             packets = [packet for packet, _ in self.flow.packets]
 
         return [
-            float(packets[i].time - packets[i - 1].time) for i in range(1, len(packets))
+            float(packets[i].time - packets[i - 1].time)
+            for i in range(1, len(packets))
         ]
 
     def relative_time_list(self):
@@ -50,7 +52,9 @@ class PacketTime:
             if index == 0:
                 relative_time_list.append(0)
             elif index < len(packet_times):
-                relative_time_list.append(float(time - packet_times[index - 1]))
+                relative_time_list.append(
+                    float(time - packet_times[index - 1])
+                )
             elif index < 50:
                 relative_time_list.append(0)
             else:
@@ -133,7 +137,7 @@ class PacketTime:
         return mode
 
     def get_skew(self):
-        """Calculates the skew of packet times in a network flow using the median.
+        """Calculates packet-time skew using the median.
 
         Returns:
             float: The skew of packet times.
@@ -151,7 +155,7 @@ class PacketTime:
         return skew
 
     def get_skew2(self):
-        """Calculates the skew of the packet times ina network flow using the mode.
+        """Calculates packet-time skew using the mode.
 
         Returns:
             float: The skew of the packet times.
@@ -169,7 +173,7 @@ class PacketTime:
         return skew2
 
     def get_cov(self):
-        """Calculates the coefficient of variance of packet times in a network flow.
+        """Calculates the coefficient of variance of packet times.
 
         Returns:
             float: The coefficient of variance of a packet times list.

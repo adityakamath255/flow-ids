@@ -32,7 +32,7 @@ class PacketLength:
             ]
         return [len(packet) for packet, _ in self.flow.packets]
 
-    def get_header_length(self, packet_direction=None) -> list:
+    def get_header_length(self, packet_direction=None) -> list[int]:
         """Creates a list of packet lengths.
 
         Returns:
@@ -40,12 +40,12 @@ class PacketLength:
 
         """
         if packet_direction is not None:
-            return (
+            return [
                 packet["IP"].ihl * 4
                 for packet, direction in self.flow.packets
                 if direction == packet_direction
-            )
-        return (packet["IP"].ihl * 4 for packet, _ in self.flow.packets)
+            ]
+        return [packet["IP"].ihl * 4 for packet, _ in self.flow.packets]
 
     def get_total_header(self, packet_direction=None) -> int:
         """Calculates the summary header lengths.
@@ -98,7 +98,7 @@ class PacketLength:
         """
         return sum(self.get_packet_length(packet_direction))
 
-    def get_avg(self, packet_direction=None) -> int:
+    def get_avg(self, packet_direction=None) -> float:
         """Total packet lengths by direction.
 
         Returns:
@@ -130,7 +130,7 @@ class PacketLength:
         var = 0
         if len(self.get_packet_length(packet_direction)) > 0:
             var = numpy.var(self.get_packet_length(packet_direction))
-        return var
+        return float(var)
 
     def get_std(self, packet_direction=None) -> float:
         """The standard deviation of packet lengths in a network flow.
@@ -139,7 +139,7 @@ class PacketLength:
             float: The standard deviation of packet lengths.
 
         """
-        return numpy.sqrt(self.get_var(packet_direction))
+        return float(numpy.sqrt(self.get_var(packet_direction)))
 
     def get_mean(self, packet_direction=None) -> float:
         """The mean of packet lengths in a network flow.
@@ -152,7 +152,7 @@ class PacketLength:
         if len(self.get_packet_length(packet_direction)) > 0:
             mean = numpy.mean(self.get_packet_length(packet_direction))
 
-        return mean
+        return float(mean)
 
     def get_median(self) -> float:
         """The median of packet lengths in a network flow.
@@ -161,7 +161,7 @@ class PacketLength:
             float: The median of packet lengths.
 
         """
-        return numpy.median(self.get_packet_length())
+        return float(numpy.median(self.get_packet_length()))
 
     def get_mode(self) -> float:
         """The mode of packet lengths in a network flow.

@@ -1,161 +1,176 @@
 import threading
+import time
+
 from scapy.packet import Packet
 from scapy.sessions import DefaultSession
 
-from .writer import output_writer_factory
-from .constants import EXPIRED_UPDATE, PACKETS_PER_GC
+from .constants import EXPIRED_UPDATE, FLOW_DURATION_TIMEOUT, PACKETS_PER_GC
 from .features.context import PacketDirection, get_packet_flow_key
 from .flow import Flow
 from .utils import get_logger
+from .writer import output_writer_factory
 
 
 class FlowSession(DefaultSession):
-    """Creates a list of network flows."""
-
     def __init__(
-        self, 
+        self,
         mode=None,
         writer=None,
         fields=None,
-        verbose=False, 
+        verbose=False,
         expired_update=EXPIRED_UPDATE,
-        *args, 
-        **kwargs
+        *args,
+        **kwargs,
     ):
-        self.flows: dict[tuple, Flow] = {}
-        self.verbose = verbose
-        self.expired_update = expired_update
-        self.fields = fields
-        self.mode = mode
-        self.writer = writer
-        self.logger = get_logger(self.verbose)
-        self.packets_count = 0
-        self.output_writer = output_writer_factory(self.mode, self.writer)
+        super().__init__(*args, **kwargs)
+        if expired_update <= 0:
+            raise ValueError("Flow expiry must be positive")
+        self._flows: dict[tuple, Flow] = {}
+        self._expired_update = expired_update
+        if isinstance(fields, str):
+            self._fields = tuple(field.strip() for field in fields.split(","))
+        elif fields is None:
+            self._fields = None
+        else:
+            self._fields = tuple(fields)
+        self._logger = get_logger(verbose)
+        self._packets_count = 0
+        self._output_writer = output_writer_factory(mode, writer)
+        self._flows_lock = threading.Lock()
+        self._writer_lock = threading.Lock()
+        self._gc_stop = threading.Event()
+        self._gc_thread: threading.Thread | None = None
+        self._closed = False
 
-        # NEW: lock protecting self.flows
-        self._lock = threading.Lock()
+    def start_periodic_gc(self, interval: float) -> None:
+        if self._closed:
+            raise RuntimeError("Flow session is closed")
+        if self._gc_thread is not None:
+            raise RuntimeError("Periodic flow collection already started")
+        self._gc_thread = threading.Thread(
+            target=self._collect_periodically,
+            args=(interval,),
+            name="flow-gc",
+            daemon=True,
+        )
+        self._gc_thread.start()
 
-        super(FlowSession, self).__init__(*args, **kwargs)
-
-    def toPacketList(self):
-        # Sniffer finished all the packets it needed to sniff.
-        # It is not a good place for this, we need to somehow define a finish signal for AsyncSniffer
-        # Use the lock to avoid races with background GC (if any)
-        with self._lock:
-            self.garbage_collect(None)
-            # delete writer after flush
+    def _collect_periodically(self, interval: float) -> None:
+        while not self._gc_stop.wait(interval):
             try:
-                del self.output_writer
+                self.garbage_collect(time.time())
             except Exception:
-                pass
-        return super(FlowSession, self).toPacketList()
+                self._logger.exception("Periodic flow collection failed")
 
-    def process(self, pkt: Packet):
-        """
-        Needed for use in scapy versions above 2.5 because of a breaking change in scapy.
-        Functionality is same as on_packet_received, but returnvalues are added.
-        """
-        self.logger.debug(f"Packet {self.packets_count}: {pkt}")
-        count = 0
-        direction = PacketDirection.FORWARD
-
+    def process(self, pkt: Packet) -> None:
         if "TCP" not in pkt and "UDP" not in pkt:
-            return None  # Do not return the packet, prevents Scapy from printing
+            return
 
         try:
-            packet_flow_key = get_packet_flow_key(pkt, direction)
-            # Acquire lock only while accessing self.flows
-            with self._lock:
-                flow = self.flows.get((packet_flow_key, count))
-        except Exception:
-            return None
+            forward_key = get_packet_flow_key(pkt, PacketDirection.FORWARD)
+            reverse_key = get_packet_flow_key(pkt, PacketDirection.REVERSE)
+        except (AttributeError, IndexError, KeyError, TypeError):
+            self._logger.debug("Ignored malformed packet", exc_info=True)
+            return
 
-        self.packets_count += 1
+        timestamp = float(pkt.time)
+        completed = self._record(pkt, timestamp, forward_key, reverse_key)
+        self._packets_count += 1
+        self._write(completed)
+        if self._packets_count % PACKETS_PER_GC == 0:
+            self.garbage_collect(timestamp)
 
-        # If there is no forward flow with a count of 0
-        if flow is None:
-            # There might be one of it in reverse
-            direction = PacketDirection.REVERSE
-            packet_flow_key = get_packet_flow_key(pkt, direction)
-            flow = self.flows.get((packet_flow_key, count))
+    def _record(
+        self,
+        packet: Packet,
+        timestamp: float,
+        forward_key: tuple,
+        reverse_key: tuple,
+    ) -> list[Flow]:
+        completed = []
 
-        if flow is None:
-            # Create a new flow (we need to insert into dict under lock)
-            direction = PacketDirection.FORWARD
-            flow = Flow(pkt, direction)
-            packet_flow_key = get_packet_flow_key(pkt, direction)
-            with self._lock:
-                self.flows[(packet_flow_key, count)] = flow
+        with self._flows_lock:
+            flow = self._flows.get(forward_key)
+            if flow is not None:
+                key = forward_key
+                direction = PacketDirection.FORWARD
+            else:
+                flow = self._flows.get(reverse_key)
+                key = reverse_key
+                direction = PacketDirection.REVERSE
 
-        elif (pkt.time - flow.latest_timestamp) > self.expired_update:
-            expired = self.expired_update
-            while (pkt.time - flow.latest_timestamp) > expired:
-                count += 1
-                expired += self.expired_update
-                with self._lock:
-                    flow = self.flows.get((packet_flow_key, count))
+            if flow is None:
+                key = forward_key
+                direction = PacketDirection.FORWARD
+                flow = Flow(packet, direction)
+                self._flows[key] = flow
+            elif timestamp - flow.latest_timestamp > self._expired_update:
+                completed.append(self._flows.pop(key))
+                flow = Flow(packet, direction)
+                self._flows[key] = flow
+            else:
+                flow.add_packet(packet, direction)
 
-                if flow is None:
-                    flow = Flow(pkt, direction)
-                    with self._lock:
-                        self.flows[(packet_flow_key, count)] = flow
-                    break
-        elif "F" in pkt.flags:
-            # FIN: add packet and early collect
-            flow.add_packet(pkt, direction)
-            # call garbage_collect with current time; protect with lock inside GC
-            self.garbage_collect(pkt.time)
-            return None
-
-        flow.add_packet(pkt, direction)
-
-        # call garbage_collect only occasionally; the background GC thread will cover periodic execution
-        if self.packets_count % PACKETS_PER_GC == 0 or flow.duration > 120:
-            self.garbage_collect(pkt.time)
-
-        return None
-
-    def get_flows(self):
-        return self.flows.values()
-
-    def garbage_collect(self, latest_time) -> None:
-        # TODO: Garbage Collection / Feature Extraction should have a separate thread
-        # Acquire lock while we iterate and delete flows
-        with self._lock:
-            keys = list(self.flows.keys())
-        for k in keys:
-            # get flow without holding lock to minimize lock hold time
-            with self._lock:
-                flow = self.flows.get(k)
-            if not flow or (
-                latest_time is not None
-                and latest_time - flow.latest_timestamp < self.expired_update
-                and flow.duration < 90
+            if self._ends_flow(packet, flow) or (
+                flow.duration >= FLOW_DURATION_TIMEOUT
             ):
-                continue
+                completed.append(self._flows.pop(key))
 
-            # Write the flow out - writer may perform IO (do it outside the lock)
-            data = flow.get_data(self.fields)
+        return completed
 
-            # Now safely delete the entry under lock
-            with self._lock:
-                # re-check existence
-                if k in self.flows:
-                    del self.flows[k]
+    @staticmethod
+    def _ends_flow(packet: Packet, flow: Flow) -> bool:
+        if "TCP" not in packet:
+            return False
 
-            # Finally write to output (IO outside the lock)
-            self.output_writer.write(data)
-            self.logger.debug(
-                f"Flow Collected! Remain Flows = {len(self.flows)}")
+        flags = int(packet["TCP"].flags)
+        if flags & 0x04:
+            return True
+        if flags & 0x01 or not flags & 0x10:
+            return False
 
-    def flush_flows(self):
-        # Write all remaining flows to output (for end of sniffing)
-        with self._lock:
-            items = list(self.flows.values())
-            self.flows.clear()
-        for flow in items:
-            self.output_writer.write(flow.get_data(self.fields))
+        fin_directions = {
+            direction
+            for flow_packet, direction in flow.packets
+            if "TCP" in flow_packet and int(flow_packet["TCP"].flags) & 0x01
+        }
+        return len(fin_directions) == 2
+
+    def garbage_collect(self, latest_time: float | None) -> None:
+        with self._flows_lock:
+            expired = [
+                key
+                for key, flow in self._flows.items()
+                if latest_time is None
+                or latest_time - flow.latest_timestamp
+                >= self._expired_update
+                or flow.duration >= FLOW_DURATION_TIMEOUT
+            ]
+            completed = [self._flows.pop(key) for key in expired]
+        self._write(completed)
+
+    def _write(self, flows: list[Flow]) -> None:
+        with self._writer_lock:
+            for flow in flows:
+                self._output_writer.write(flow.get_data(self._fields))
+
+    def flush_flows(self) -> None:
+        self.garbage_collect(None)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._gc_stop.set()
+        if self._gc_thread is not None:
+            self._gc_thread.join()
         try:
-            del self.output_writer
-        except Exception:
-            pass
+            self.flush_flows()
+        finally:
+            self._output_writer.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
