@@ -87,7 +87,6 @@ Options:
 -i, --interface     Network interface for live capture (mutually exclusive with -p)
 -p, --pcap          Path to pcap file for replay (mutually exclusive with -i)
 -m, --model-dir     Model directory (default: models/)
--t, --idle-timeout  Expired flow update interval in seconds (default: 10)
 -d, --db            SQLite output path (default: flows.db)
 ```
 
@@ -99,12 +98,18 @@ Place the CIC-IDS2017 CSV files in `training-data/MachineLearningCVE/`, then:
 uv run python3 train.py
 ```
 
-This writes `model.json` and `encoder.pkl` to `models/`. Training configuration (feature mapping, class grouping, XGBoost hyperparameters) is at the top of `train.py`.
+This writes `model.json`, `encoder.pkl`, and `metrics.json` to `models/`.
+Training configuration (feature mapping, class grouping, XGBoost
+hyperparameters) is at the top of `train.py`.
+
+## Tests
+
+```bash
+uv run python3 -m unittest discover -s tests -v
+```
 
 ## Stack
 
 Scapy, XGBoost, scikit-learn, Streamlit, pandas, SQLite
 
 Requires Python 3.10+.
-</content>
-</invoke>

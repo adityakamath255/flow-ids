@@ -3,6 +3,8 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 
+from flow_database import RECENT_FLOWS_QUERY, SESSIONS_QUERY
+
 DB_PATH = "flows.db"
 WINDOW = 2000
 BENIGN = "BENIGN"
@@ -21,9 +23,9 @@ def connect() -> sqlite3.Connection:
 
 def recent_flows() -> pd.DataFrame:
     df = pd.read_sql_query(
-        "SELECT recorded_at, src_ip, dst_ip, dst_port, protocol, label, "
-        f"confidence FROM classified_flow ORDER BY recorded_at DESC LIMIT {WINDOW}",
+        RECENT_FLOWS_QUERY,
         connect(),
+        params=[WINDOW],
     )
     df["recorded_at"] = pd.to_datetime(df["recorded_at"], unit="s")
     return df
@@ -40,21 +42,23 @@ def per_second(df: pd.DataFrame) -> pd.DataFrame:
     counts = pd.DataFrame({"second": seconds, "attacks": attack.astype(int)})
     grouped = counts.groupby("second")["attacks"].agg(["count", "sum"])
     return pd.DataFrame(
-        {"benign": grouped["count"] - grouped["sum"], "attacks": grouped["sum"]}
+        {
+            "benign": grouped["count"] - grouped["sum"],
+            "attacks": grouped["sum"],
+        }
     )
 
 
 def sessions() -> pd.DataFrame:
     df = pd.read_sql_query(
-        "SELECT s.id, s.source, s.started_at, s.ended_at, "
-        "COUNT(f.id) AS flows, "
-        f"COALESCE(SUM(f.label != '{BENIGN}'), 0) AS attacks "
-        "FROM sessions s LEFT JOIN classified_flow f ON f.session_id = s.id "
-        "GROUP BY s.id ORDER BY s.id DESC",
+        SESSIONS_QUERY,
         connect(),
+        params=[BENIGN],
     )
     fmt = "%Y-%m-%d %H:%M:%S"
-    df["started_at"] = pd.to_datetime(df["started_at"], unit="s").dt.strftime(fmt)
+    df["started_at"] = pd.to_datetime(df["started_at"], unit="s").dt.strftime(
+        fmt
+    )
     ended = pd.to_datetime(df["ended_at"], unit="s").dt.strftime(fmt)
     df["ended_at"] = ended.fillna("running")
     return df
@@ -97,6 +101,10 @@ def view() -> None:
     st.dataframe(sessions(), use_container_width=True, hide_index=True)
 
 
-st.set_page_config(page_title="flow-ids", layout="wide")
-st.title("flow-ids")
-view()
+def main() -> None:
+    st.set_page_config(page_title="flow-ids", layout="wide")
+    st.title("flow-ids")
+    view()
+
+
+main()
