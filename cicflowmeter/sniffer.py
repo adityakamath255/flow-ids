@@ -1,10 +1,12 @@
 import argparse
+from collections.abc import Collection
 from pathlib import Path
 
 from scapy.sendrecv import AsyncSniffer
 
 from .constants import EXPIRED_UPDATE
 from .flow_session import FlowSession
+from .writer import CsvOutput, output_from_legacy
 
 GC_INTERVAL = 1.0
 
@@ -30,43 +32,52 @@ def _run_file(path: Path, session: FlowSession) -> None:
 
 
 def create_sniffer(
-    input_file,
-    input_interface,
-    mode,
+    input_file: str | None,
+    input_interface: str | None,
+    mode: str,
     writer,
-    fields=None,
-    verbose=False,
-    expired_update=EXPIRED_UPDATE,
-):
+    fields: str | Collection[str] | None = None,
+    verbose: bool = False,
+    expired_update: float = EXPIRED_UPDATE,
+) -> tuple[AsyncSniffer, FlowSession]:
     if (input_file is None) == (input_interface is None):
         raise ValueError("Provide exactly one packet source")
 
+    output = output_from_legacy(mode, writer)
     session = FlowSession(
-        mode=mode,
-        writer=writer,
+        output=output,
         fields=fields,
         verbose=verbose,
         expired_update=expired_update,
     )
 
-    if input_file:
-        sniffer = AsyncSniffer(
-            offline=input_file,
-            prn=session.process,
-            store=False,
-        )
-    else:
-        sniffer = AsyncSniffer(
-            iface=input_interface,
-            filter="ip and (tcp or udp)",
-            prn=session.process,
-            store=False,
-            started_callback=lambda: session.start_periodic_gc(GC_INTERVAL),
-        )
+    try:
+        if input_file is not None:
+            sniffer = AsyncSniffer(
+                offline=input_file,
+                prn=session.process,
+                store=False,
+            )
+        else:
+            sniffer = AsyncSniffer(
+                iface=input_interface,
+                filter="ip and (tcp or udp)",
+                prn=session.process,
+                store=False,
+                started_callback=lambda: session.start_periodic_gc(
+                    GC_INTERVAL
+                ),
+            )
+    except Exception:
+        session.close()
+        raise
     return sniffer, session
 
 
-def _prepare_batch(input_dir, output_dir):
+def _prepare_batch(
+    input_dir: str | Path,
+    output_dir: str | Path,
+) -> tuple[Path, list[Path]] | None:
     input_path = Path(input_dir)
     output_path = Path(output_dir)
 
@@ -78,6 +89,13 @@ def _prepare_batch(input_dir, output_dir):
         print(f"Error: Input path '{input_dir}' is not a directory")
         return None
 
+    pcap_files = sorted(
+        (*input_path.glob("*.pcap"), *input_path.glob("*.pcapng"))
+    )
+    if not pcap_files:
+        print(f"Error: No pcap files found in {input_dir}")
+        return None
+
     if output_path.exists() and output_path.is_file():
         print(f"Error: Output path '{output_dir}' already exists as a file.")
         print("Please provide a directory path for batch processing.")
@@ -87,27 +105,20 @@ def _prepare_batch(input_dir, output_dir):
         output_path.mkdir(parents=True, exist_ok=True)
     except OSError as error:
         print(
-            f"Error: Could not create output directory '{output_dir}': "
-            f"{error}"
+            f"Error: Could not create output directory '{output_dir}': {error}"
         )
         return None
 
-    pcap_files = sorted(
-        (*input_path.glob("*.pcap"), *input_path.glob("*.pcapng"))
-    )
-    if not pcap_files:
-        print(f"Error: No pcap files found in {input_dir}")
-        return None
     return output_path, pcap_files
 
 
 def process_directory(
-    input_dir,
-    output_dir,
-    fields=None,
-    verbose=False,
-    merge=False,
-):
+    input_dir: str | Path,
+    output_dir: str | Path,
+    fields: str | Collection[str] | None = None,
+    verbose: bool = False,
+    merge: bool = False,
+) -> None:
     batch = _prepare_batch(input_dir, output_dir)
     if batch is None:
         return
@@ -118,8 +129,7 @@ def process_directory(
         output_file = output_path / "merged_output.csv"
         print(f"Merging all flows into: {output_file.name}")
         with FlowSession(
-            mode="csv",
-            writer=str(output_file),
+            output=CsvOutput(output_file),
             fields=fields,
             verbose=verbose,
         ) as session:
@@ -131,6 +141,8 @@ def process_directory(
                     print(f"{progress} Completed {pcap_file.name}")
                 except Exception as error:
                     print(f"Error processing {pcap_file.name}: {error}")
+                finally:
+                    session.flush_flows()
         print(f"\nAll done! Merged output saved to: {output_file}")
         return
 
@@ -139,8 +151,7 @@ def process_directory(
         print(f"Processing {pcap_file.name} -> {output_file.name}")
         try:
             with FlowSession(
-                mode="csv",
-                writer=str(output_file),
+                output=CsvOutput(output_file),
                 fields=fields,
                 verbose=verbose,
             ) as session:
@@ -152,7 +163,7 @@ def process_directory(
     print(f"\nAll done! Output files saved to: {output_dir}")
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser()
 
     input_group = parser.add_mutually_exclusive_group(required=True)
@@ -224,6 +235,8 @@ def main():
     args = parser.parse_args()
     if args.merge and not args.input_directory:
         parser.error("--merge can only be used with -d/--directory mode")
+    if args.input_directory and args.output_mode != "csv":
+        parser.error("directory mode requires CSV output")
     if args.input_directory:
         process_directory(
             args.input_directory,

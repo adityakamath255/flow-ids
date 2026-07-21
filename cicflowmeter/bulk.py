@@ -4,7 +4,7 @@ from . import constants
 from .features.context import PacketDirection
 
 
-@dataclass
+@dataclass(slots=True)
 class _Candidate:
     start: float
     latest: float
@@ -12,19 +12,41 @@ class _Candidate:
     size: int
 
 
-@dataclass
-class _Totals:
-    bulks: int = 0
-    packets: int = 0
-    size: int = 0
-    duration: float = 0
+@dataclass(frozen=True, slots=True)
+class DirectionBulk:
+    bytes_per_bulk: float
+    packets_per_bulk: float
+    rate: float
+
+
+@dataclass(frozen=True, slots=True)
+class BulkSnapshot:
+    forward: DirectionBulk
+    reverse: DirectionBulk
+
+    def for_direction(self, direction: PacketDirection) -> DirectionBulk:
+        if direction is PacketDirection.FORWARD:
+            return self.forward
+        return self.reverse
 
 
 class _DirectionBulk:
+    __slots__ = (
+        "latest",
+        "candidate",
+        "bulks",
+        "packets",
+        "size",
+        "duration",
+    )
+
     def __init__(self) -> None:
         self.latest: float | None = None
         self.candidate: _Candidate | None = None
-        self.totals = _Totals()
+        self.bulks = 0
+        self.packets = 0
+        self.size = 0
+        self.duration = 0.0
 
     def observe(
         self,
@@ -45,20 +67,29 @@ class _DirectionBulk:
         candidate.packets += 1
         candidate.size += payload_size
         if candidate.packets == constants.BULK_BOUND:
-            self.totals.bulks += 1
-            self.totals.packets += candidate.packets
-            self.totals.size += candidate.size
-            self.totals.duration += timestamp - candidate.start
+            self.bulks += 1
+            self.packets += candidate.packets
+            self.size += candidate.size
+            self.duration += timestamp - candidate.start
         elif candidate.packets > constants.BULK_BOUND:
-            self.totals.packets += 1
-            self.totals.size += payload_size
-            self.totals.duration += timestamp - candidate.latest
+            self.packets += 1
+            self.size += payload_size
+            self.duration += timestamp - candidate.latest
 
         candidate.latest = timestamp
         self.latest = timestamp
 
+    def snapshot(self) -> DirectionBulk:
+        return DirectionBulk(
+            bytes_per_bulk=(self.size / self.bulks if self.bulks else 0),
+            packets_per_bulk=(self.packets / self.bulks if self.bulks else 0),
+            rate=self.size / self.duration if self.duration else 0,
+        )
+
 
 class BulkTracker:
+    __slots__ = ("_forward", "_reverse")
+
     def __init__(self) -> None:
         self._forward = _DirectionBulk()
         self._reverse = _DirectionBulk()
@@ -78,17 +109,11 @@ class BulkTracker:
         )
         current.observe(payload_size, timestamp, interrupted)
 
-    def bytes_per_bulk(self, direction: PacketDirection) -> float:
-        totals = self._directions(direction)[0].totals
-        return totals.size / totals.bulks if totals.bulks else 0
-
-    def packets_per_bulk(self, direction: PacketDirection) -> float:
-        totals = self._directions(direction)[0].totals
-        return totals.packets / totals.bulks if totals.bulks else 0
-
-    def rate(self, direction: PacketDirection) -> float:
-        totals = self._directions(direction)[0].totals
-        return totals.size / totals.duration if totals.duration else 0
+    def snapshot(self) -> BulkSnapshot:
+        return BulkSnapshot(
+            forward=self._forward.snapshot(),
+            reverse=self._reverse.snapshot(),
+        )
 
     def _directions(
         self, direction: PacketDirection

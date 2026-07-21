@@ -1,11 +1,18 @@
 import logging
-import uuid
-from itertools import islice, zip_longest
+from collections.abc import Iterable
+from math import sqrt
+from typing import NamedTuple
 
-import numpy
+
+class Statistics(NamedTuple):
+    total: float
+    maximum: float
+    minimum: float
+    mean: float
+    standard_deviation: float
 
 
-def get_logger(debug=False):
+def get_logger(debug: bool = False) -> logging.Logger:
     logger = logging.getLogger("cicflowmeter")
     if not logger.hasHandlers():
         logging.basicConfig()
@@ -13,31 +20,21 @@ def get_logger(debug=False):
     return logger
 
 
-def grouper(iterable, n, max_groups=0, fillvalue=None):
-    """Collect data into fixed-length chunks or blocks"""
+def get_statistics(
+    values: Iterable[float],
+    scale: float = 1.0,
+) -> Statistics:
+    samples = tuple(float(value) for value in values)
+    if not samples:
+        return Statistics(0, 0, 0, 0, 0)
 
-    if max_groups > 0:
-        iterable = islice(iterable, max_groups * n)
-
-    args = [iter(iterable)] * n
-    return zip_longest(*args, fillvalue=fillvalue)
-
-
-def random_string():
-    return uuid.uuid4().hex[:6].upper().replace("0", "X").replace("O", "Y")
-
-
-def get_statistics(alist: list):
-    """Get summary statistics of a list"""
-    alist = [float(x) for x in alist]
-
-    if not alist:
-        return {"total": 0, "max": 0, "min": 0, "mean": 0, "std": 0}
-
-    return {
-        "total": sum(alist),
-        "max": max(alist),
-        "min": min(alist),
-        "mean": numpy.mean(alist),
-        "std": numpy.sqrt(numpy.var(alist)),
-    }
+    total = sum(samples)
+    mean = total / len(samples)
+    variance = sum((value - mean) ** 2 for value in samples) / len(samples)
+    return Statistics(
+        total * scale,
+        max(samples) * scale,
+        min(samples) * scale,
+        mean * scale,
+        sqrt(variance) * scale,
+    )

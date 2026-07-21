@@ -1,31 +1,31 @@
 import threading
 import time
+from collections.abc import Collection
 
 from scapy.packet import Packet
 from scapy.sessions import DefaultSession
 
 from .constants import EXPIRED_UPDATE, FLOW_DURATION_TIMEOUT, PACKETS_PER_GC
-from .features.context import PacketDirection, get_packet_flow_key
+from .features.context import FlowKey, PacketDirection, packet_flow_key
 from .flow import Flow
 from .utils import get_logger
-from .writer import output_writer_factory
+from .writer import Output, open_output
 
 
 class FlowSession(DefaultSession):
     def __init__(
         self,
-        mode=None,
-        writer=None,
-        fields=None,
-        verbose=False,
-        expired_update=EXPIRED_UPDATE,
         *args,
+        output: Output,
+        fields: str | Collection[str] | None = None,
+        verbose: bool = False,
+        expired_update: float = EXPIRED_UPDATE,
         **kwargs,
-    ):
+    ) -> None:
         super().__init__(*args, **kwargs)
         if expired_update <= 0:
             raise ValueError("Flow expiry must be positive")
-        self._flows: dict[tuple, Flow] = {}
+        self._flows: dict[FlowKey, Flow] = {}
         self._expired_update = expired_update
         if isinstance(fields, str):
             self._fields = tuple(field.strip() for field in fields.split(","))
@@ -35,7 +35,7 @@ class FlowSession(DefaultSession):
             self._fields = tuple(fields)
         self._logger = get_logger(verbose)
         self._packets_count = 0
-        self._output_writer = output_writer_factory(mode, writer)
+        self._output_writer = open_output(output)
         self._flows_lock = threading.Lock()
         self._writer_lock = threading.Lock()
         self._gc_stop = threading.Event()
@@ -43,6 +43,8 @@ class FlowSession(DefaultSession):
         self._closed = False
 
     def start_periodic_gc(self, interval: float) -> None:
+        if interval <= 0:
+            raise ValueError("Flow collection interval must be positive")
         if self._closed:
             raise RuntimeError("Flow session is closed")
         if self._gc_thread is not None:
@@ -67,14 +69,13 @@ class FlowSession(DefaultSession):
             return
 
         try:
-            forward_key = get_packet_flow_key(pkt, PacketDirection.FORWARD)
-            reverse_key = get_packet_flow_key(pkt, PacketDirection.REVERSE)
-        except (AttributeError, IndexError, KeyError, TypeError):
+            key = packet_flow_key(pkt)
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError):
             self._logger.debug("Ignored malformed packet", exc_info=True)
             return
 
         timestamp = float(pkt.time)
-        completed = self._record(pkt, timestamp, forward_key, reverse_key)
+        completed = self._record(pkt, timestamp, key)
         self._packets_count += 1
         self._write(completed)
         if self._packets_count % PACKETS_PER_GC == 0:
@@ -84,15 +85,15 @@ class FlowSession(DefaultSession):
         self,
         packet: Packet,
         timestamp: float,
-        forward_key: tuple,
-        reverse_key: tuple,
+        packet_key: FlowKey,
     ) -> list[Flow]:
         completed = []
+        reverse_key = packet_key.reverse()
 
         with self._flows_lock:
-            flow = self._flows.get(forward_key)
+            flow = self._flows.get(packet_key)
             if flow is not None:
-                key = forward_key
+                key = packet_key
                 direction = PacketDirection.FORWARD
             else:
                 flow = self._flows.get(reverse_key)
@@ -100,50 +101,28 @@ class FlowSession(DefaultSession):
                 direction = PacketDirection.REVERSE
 
             if flow is None:
-                key = forward_key
+                key = packet_key
                 direction = PacketDirection.FORWARD
-                flow = Flow(packet, direction)
+                flow = Flow(packet, direction, key)
                 self._flows[key] = flow
-            elif timestamp - flow.latest_timestamp > self._expired_update:
+            elif timestamp - flow.latest_timestamp >= self._expired_update:
                 completed.append(self._flows.pop(key))
-                flow = Flow(packet, direction)
+                flow = Flow(packet, direction, key)
                 self._flows[key] = flow
             else:
                 flow.add_packet(packet, direction)
 
-            if self._ends_flow(packet, flow) or (
-                flow.duration >= FLOW_DURATION_TIMEOUT
-            ):
+            if flow.ended or flow.duration >= FLOW_DURATION_TIMEOUT:
                 completed.append(self._flows.pop(key))
 
         return completed
 
-    @staticmethod
-    def _ends_flow(packet: Packet, flow: Flow) -> bool:
-        if "TCP" not in packet:
-            return False
-
-        flags = int(packet["TCP"].flags)
-        if flags & 0x04:
-            return True
-        if flags & 0x01 or not flags & 0x10:
-            return False
-
-        fin_directions = {
-            direction
-            for flow_packet, direction in flow.packets
-            if "TCP" in flow_packet and int(flow_packet["TCP"].flags) & 0x01
-        }
-        return len(fin_directions) == 2
-
-    def garbage_collect(self, latest_time: float | None) -> None:
+    def garbage_collect(self, latest_time: float) -> None:
         with self._flows_lock:
             expired = [
                 key
                 for key, flow in self._flows.items()
-                if latest_time is None
-                or latest_time - flow.latest_timestamp
-                >= self._expired_update
+                if latest_time - flow.latest_timestamp >= self._expired_update
                 or flow.duration >= FLOW_DURATION_TIMEOUT
             ]
             completed = [self._flows.pop(key) for key in expired]
@@ -155,7 +134,10 @@ class FlowSession(DefaultSession):
                 self._output_writer.write(flow.get_data(self._fields))
 
     def flush_flows(self) -> None:
-        self.garbage_collect(None)
+        with self._flows_lock:
+            completed = list(self._flows.values())
+            self._flows.clear()
+        self._write(completed)
 
     def close(self) -> None:
         if self._closed:
