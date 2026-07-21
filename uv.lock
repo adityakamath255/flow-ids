@@ -229,8 +229,6 @@ dependencies = [
     { name = "scapy" },
     { name = "scikit-learn", version = "1.7.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scikit-learn", version = "1.9.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
-    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "streamlit" },
     { name = "xgboost" },
 ]
@@ -243,7 +241,6 @@ requires-dist = [
     { name = "requests" },
     { name = "scapy" },
     { name = "scikit-learn" },
-    { name = "scipy" },
     { name = "streamlit" },
     { name = "xgboost" },
 ]
