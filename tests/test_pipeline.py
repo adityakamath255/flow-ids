@@ -4,26 +4,34 @@ from contextlib import closing
 from json import loads
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import cast
 
 import numpy as np
 from scapy.layers.inet import IP, TCP
 from scapy.utils import wrpcap
+from xgboost import XGBClassifier
 
-from cicflowmeter import PcapSource
-from cicflowmeter.schema import CIC_IDS_2017_COLUMNS
+from cicflowmeter.capture import PcapSource
+from cicflowmeter.schema import Flow, FlowKey
+from classifier import Classifier
 from flow_database import (
-    Classified,
     RECENT_FLOWS_QUERY,
     SESSIONS_QUERY,
     open_flow_store,
 )
-from main import Classifier, Config, run
-from train import DROP_FEATURES
+from main import run
+
+
+class StubBooster:
+    feature_names = ["tot_fwd_pkts"]
 
 
 class StubModel:
+    def get_booster(self) -> StubBooster:
+        return StubBooster()
+
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        return np.tile([0.1, 0.9], (len(X), 1))
+        return np.tile([0.01, 0.02, 0.03, 0.9, 0.04], (len(X), 1))
 
 
 class PipelineTests(unittest.TestCase):
@@ -48,14 +56,10 @@ class PipelineTests(unittest.TestCase):
             wrpcap(str(pcap_path), packets)
 
             classifier = Classifier(
-                StubModel(),
-                ("tot_fwd_pkts",),
-                ("BENIGN", "DOS"),
+                cast(XGBClassifier, StubModel()),
+                ("BENIGN", "BRUTE-FORCE", "DDOS", "DOS", "RECON"),
             )
-            run(
-                Config(PcapSource(pcap_path), Path("unused"), db_path),
-                classifier,
-            )
+            run(PcapSource(pcap_path), db_path, classifier)
 
             with closing(sqlite3.connect(db_path)) as connection:
                 recent = connection.execute(
@@ -64,22 +68,25 @@ class PipelineTests(unittest.TestCase):
                 session = connection.execute(
                     SESSIONS_QUERY, ("BENIGN",)
                 ).fetchone()
-                stored_flow = loads(
-                    connection.execute("SELECT flow FROM flows").fetchone()[0]
+                stored_features = loads(
+                    connection.execute(
+                        "SELECT features FROM flows"
+                    ).fetchone()[0]
                 )
+                captured_at = connection.execute(
+                    "SELECT captured_at FROM flows"
+                ).fetchone()[0]
 
         self.assertEqual(
             recent[1:7],
-            ("10.0.0.1", "10.0.0.2", 80, 6, "DOS", 0.9),
+            ("10.0.0.1", "10.0.0.2", 80, "TCP", "DOS", 0.9),
         )
-        self.assertEqual(stored_flow["tot_fwd_pkts"], 3)
-        self.assertEqual(stored_flow["tot_bwd_pkts"], 2)
-        self.assertEqual(stored_flow["flow_iat_mean"], 250_000)
-        self.assertEqual(stored_flow["flow_duration"], 1_000_000)
-        expected_features = set(CIC_IDS_2017_COLUMNS.values()) - set(
-            DROP_FEATURES
-        )
-        self.assertLessEqual(expected_features, stored_flow.keys())
+        self.assertEqual(captured_at, 1000)
+        self.assertEqual(stored_features["tot_fwd_pkts"], 3)
+        self.assertEqual(stored_features["tot_bwd_pkts"], 2)
+        self.assertEqual(stored_features["flow_iat_mean"], 250_000)
+        self.assertEqual(stored_features["flow_duration"], 1_000_000)
+        self.assertNotIn("src_ip", stored_features)
         self.assertEqual(session[1], f"pcap:{pcap_path}")
         self.assertIsNotNone(session[3])
         self.assertEqual(session[4:], (1, 1))
@@ -91,8 +98,13 @@ class DatabaseTests(unittest.TestCase):
             db_path = Path(directory) / "flows.db"
             with open_flow_store(db_path, "test") as store:
                 with self.assertRaises(ValueError):
-                    store.write_all(
-                        [Classified({"flow_duration": np.nan}, {"BENIGN": 1})]
+                    store.write(
+                        Flow(
+                            FlowKey("TCP", "a", "b", 1, 2),
+                            0,
+                            {"flow_duration": np.nan},
+                        ),
+                        {"BENIGN": 1},
                     )
 
 

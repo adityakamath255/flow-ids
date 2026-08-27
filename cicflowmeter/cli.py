@@ -3,12 +3,16 @@ import csv
 import logging
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from itertools import chain
 from pathlib import Path
 from typing import TypeAlias
 
 from .capture import CaptureSource, InterfaceSource, PcapSource, open_flows
-from .schema import FlowData
+from .schema import Flow
+
+CsvValue: TypeAlias = str | int | float
+CsvRow: TypeAlias = dict[str, CsvValue]
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,14 +35,28 @@ class DirectoryConfig:
 CliConfig: TypeAlias = SingleConfig | DirectoryConfig
 
 
-def _flows(source: CaptureSource) -> Iterator[FlowData]:
+def _flows(source: CaptureSource) -> Iterator[Flow]:
     with open_flows(source) as flows:
         try:
             yield from flows
         except KeyboardInterrupt:
-            flows.close()
-            yield from flows
+            yield from flows.finish()
             raise
+
+
+def _row(flow: Flow) -> CsvRow:
+    key = flow.key
+    return {
+        "src_ip": key.src_ip,
+        "dst_ip": key.dst_ip,
+        "src_port": key.src_port,
+        "dst_port": key.dst_port,
+        "protocol": key.protocol,
+        "timestamp": datetime.fromtimestamp(flow.captured_at).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        **flow.features,
+    }
 
 
 def _write_csv(
@@ -46,18 +64,21 @@ def _write_csv(
     sources: Iterable[CaptureSource],
     requested_fields: tuple[str, ...] | None,
 ) -> None:
-    flows = chain.from_iterable(_flows(source) for source in sources)
+    rows = (
+        _row(flow)
+        for flow in chain.from_iterable(_flows(source) for source in sources)
+    )
     with path.open("w", encoding="utf-8", newline="") as output:
-        first = next(flows, None)
+        first = next(rows, None)
         if first is None:
             return
 
         fields = requested_fields or tuple(first)
         writer = csv.DictWriter(output, fieldnames=fields)
         writer.writeheader()
-        for flow in chain((first,), flows):
+        for row in chain((first,), rows):
             writer.writerow(
-                {field: flow[field] for field in fields if field in flow}
+                {field: row[field] for field in fields if field in row}
             )
             output.flush()
 

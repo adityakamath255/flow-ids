@@ -6,17 +6,17 @@ from typing import cast
 import numpy as np
 import pandas as pd
 import xgboost as xgb
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.utils.class_weight import compute_sample_weight
 
 from cicflowmeter.schema import CIC_IDS_2017_COLUMNS
-from model_artifacts import ModelArtifacts
+from classifier import Classifier
 
 HERE = Path(__file__).resolve().parent
 DATASET_DIR = HERE / "training-data/MachineLearningCVE"
-OUTPUT_DIR = HERE / "models"
+MODEL_PATH = HERE / "models/model.json"
 RANDOM_STATE = 42
 TEST_SIZE = 0.2
 
@@ -25,9 +25,7 @@ TOPOLOGY_FEATURES = (
     "init_fwd_win_byts",
     "init_bwd_win_byts",
 )
-DUPLICATE_FEATURES = (
-    "fwd_header_len.1",
-)
+DUPLICATE_FEATURES = ("fwd_header_len.1",)
 UNPOPULATED_FEATURES = (
     "bwd_psh_flags",
     "bwd_urg_flags",
@@ -89,7 +87,7 @@ def prepare(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
 
     X = (
         df.loc[grouped]
-        .drop(columns=["Label", *DROP_FEATURES], errors="ignore")
+        .drop(columns=["Label", *DROP_FEATURES])
         .replace([np.inf, -np.inf], np.nan)
     )
     return X, y[grouped]
@@ -104,10 +102,9 @@ def train(X: pd.DataFrame, y: np.ndarray) -> xgb.XGBClassifier:
 def evaluate(
     model: xgb.XGBClassifier,
     splits: list[tuple[str, pd.DataFrame, np.ndarray]],
-    labels: Sequence[str],
-) -> dict:
-    metrics: dict = {"labels": list(labels)}
-    label_ids = np.arange(len(labels))
+    classes: Sequence[str],
+) -> None:
+    label_ids = np.arange(len(classes))
     for name, X, y in splits:
         pred = model.predict(X)
         print(f"\n== {name} ==")
@@ -116,23 +113,10 @@ def evaluate(
                 y,
                 pred,
                 labels=label_ids,
-                target_names=labels,
+                target_names=classes,
                 digits=4,
             )
         )
-        metrics[name] = {
-            "report": classification_report(
-                y,
-                pred,
-                labels=label_ids,
-                target_names=labels,
-                output_dict=True,
-            ),
-            "confusion_matrix": confusion_matrix(
-                y, pred, labels=label_ids
-            ).tolist(),
-        }
-    return metrics
 
 
 def main() -> None:
@@ -146,34 +130,32 @@ def main() -> None:
     X, y = prepare(df)
     log(f"{len(X)} flows, {X.shape[1]} features, {y.nunique()} classes")
 
+    encoder = LabelEncoder().fit(y)
+    classes = tuple(str(label) for label in encoder.classes_)
+    encoded = encoder.transform(y)
     X_train, X_test, y_train, y_test = cast(
-        tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series],
+        tuple[pd.DataFrame, pd.DataFrame, np.ndarray, np.ndarray],
         train_test_split(
             X,
-            y,
+            encoded,
             test_size=TEST_SIZE,
             random_state=RANDOM_STATE,
-            stratify=y,
+            stratify=encoded,
         ),
     )
 
-    encoder = LabelEncoder().fit(y)
-    classes = cast(np.ndarray, encoder.classes_)
-    y_train_enc = encoder.transform(y_train)
-    y_test_enc = encoder.transform(y_test)
-
     log("Training...")
-    model = train(X_train, y_train_enc)
+    model = train(X_train, y_train)
 
     log("Evaluating...")
-    metrics = evaluate(
+    evaluate(
         model,
-        [("train", X_train, y_train_enc), ("test", X_test, y_test_enc)],
-        [str(label) for label in classes],
+        [("train", X_train, y_train), ("test", X_test, y_test)],
+        classes,
     )
 
-    log("Saving artifacts...")
-    ModelArtifacts(OUTPUT_DIR).save(model, encoder, metrics)
+    log("Saving model...")
+    Classifier(model, classes).save(MODEL_PATH)
     log("Done.")
 
 

@@ -1,56 +1,23 @@
 import argparse
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 
-import numpy as np
-
-import cicflowmeter
-from flow_database import Classified, Prediction, open_flow_store
-from model_artifacts import ModelArtifacts
-
-
-class ProbabilityModel(Protocol):
-    def predict_proba(self, X: np.ndarray) -> np.ndarray: ...
+from cicflowmeter.capture import (
+    CaptureSource,
+    InterfaceSource,
+    PcapSource,
+    open_flows,
+)
+from classifier import Classifier
+from flow_database import open_flow_store
 
 
 @dataclass(frozen=True)
 class Config:
-    source: cicflowmeter.CaptureSource
-    model_dir: Path
+    source: CaptureSource
+    model_path: Path
     db_path: Path
-
-
-@dataclass(frozen=True)
-class Classifier:
-    _model: ProbabilityModel
-    _features: tuple[str, ...]
-    _classes: tuple[str, ...]
-
-    @classmethod
-    def load(cls, model_dir: Path) -> "Classifier":
-        loaded = ModelArtifacts(model_dir).load()
-        return cls(loaded.model, loaded.features, loaded.classes)
-
-    def _classify(self, flow: cicflowmeter.FlowData) -> Prediction:
-        values = np.array(
-            [flow.get(feature, np.nan) for feature in self._features],
-            dtype=np.float64,
-        )
-        cleaned = np.where(np.isinf(values), np.nan, values)
-        reshaped = cleaned.reshape(1, -1)
-        probs = self._model.predict_proba(reshaped)[0]
-        return {
-            label: float(probability)
-            for label, probability in zip(self._classes, probs, strict=True)
-        }
-
-    def stream(
-        self,
-        flows: Iterable[cicflowmeter.FlowData],
-    ) -> Iterator[Classified]:
-        return (Classified(flow, self._classify(flow)) for flow in flows)
 
 
 def parse_args(argv: Sequence[str] | None = None) -> Config:
@@ -60,10 +27,10 @@ def parse_args(argv: Sequence[str] | None = None) -> Config:
     group.add_argument("-p", "--pcap", type=Path, help="Path to pcap file")
     parser.add_argument(
         "-m",
-        "--model-dir",
-        default=Path("models"),
+        "--model",
+        default=Path("models/model.json"),
         type=Path,
-        help="Model output directory",
+        help="Trained model path",
     )
     parser.add_argument(
         "-d",
@@ -73,29 +40,38 @@ def parse_args(argv: Sequence[str] | None = None) -> Config:
         help="SQLite output path",
     )
     args = parser.parse_args(argv)
-    source: cicflowmeter.CaptureSource
+    source: CaptureSource
     if args.interface is not None:
-        source = cicflowmeter.InterfaceSource(args.interface)
+        source = InterfaceSource(args.interface)
     else:
-        source = cicflowmeter.PcapSource(args.pcap)
-    return Config(source, args.model_dir, args.db)
+        source = PcapSource(args.pcap)
+    return Config(source, args.model, args.db)
 
 
-def run(config: Config, classifier: Classifier) -> None:
+def run(
+    source: CaptureSource,
+    db_path: Path,
+    classifier: Classifier,
+) -> None:
     with (
-        cicflowmeter.open_flows(config.source) as flows,
-        open_flow_store(config.db_path, config.source.description) as store,
+        open_flows(source) as flows,
+        open_flow_store(db_path, source.description) as store,
     ):
         try:
-            store.write_all(classifier.stream(flows))
+            for flow in flows:
+                store.write(flow, classifier.classify(flow.features))
         except KeyboardInterrupt:
-            flows.close()
-            store.write_all(classifier.stream(flows))
+            for flow in flows.finish():
+                store.write(flow, classifier.classify(flow.features))
 
 
 def main() -> None:
     config = parse_args()
-    run(config, Classifier.load(config.model_dir))
+    run(
+        config.source,
+        config.db_path,
+        Classifier.load(config.model_path),
+    )
 
 
 if __name__ == "__main__":

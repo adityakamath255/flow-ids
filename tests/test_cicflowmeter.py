@@ -1,4 +1,5 @@
 import csv
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -7,9 +8,10 @@ from scapy.layers.inet import IP, TCP, UDP
 from scapy.packet import Raw
 from scapy.utils import wrpcap
 
+from cicflowmeter.capture import PcapSource, _FlowStream
 from cicflowmeter.cli import parse_args, run
-from cicflowmeter.features.context import packet_flow_key
-from cicflowmeter.flow_session import FlowSession
+from cicflowmeter.feature_extraction import extract_features
+from cicflowmeter.flow import FlowTable, PacketRecord, packet_flow_key
 
 REPRESENTATIVE_FLOW = (
     (0.0, False, "S", 1000, 0),
@@ -78,26 +80,31 @@ class FlowIdentityTests(unittest.TestCase):
 
 class FlowFeatureTests(unittest.TestCase):
     def test_flow_closes_after_both_fins_and_final_ack(self) -> None:
-        output = []
-        session = FlowSession(emit=output.append)
+        table = FlowTable()
 
-        session.process(flow_packet(0, flags="S"))
-        session.process(flow_packet(0.1, flags="FA"))
-        session.process(flow_packet(0.2, reverse=True, flags="FA"))
-        self.assertEqual(output, [])
+        table.accept(PacketRecord.from_packet(flow_packet(0, flags="S")))
+        table.accept(PacketRecord.from_packet(flow_packet(0.1, flags="FA")))
+        completed = table.accept(
+            PacketRecord.from_packet(
+                flow_packet(0.2, reverse=True, flags="FA")
+            )
+        )
+        self.assertEqual(completed, ())
 
-        session.process(flow_packet(0.3))
-        session.close()
+        completed = table.accept(PacketRecord.from_packet(flow_packet(0.3)))
 
-        self.assertEqual(len(output), 1)
+        self.assertEqual(len(completed), 1)
 
-    def test_feature_views_preserve_cic_values(self) -> None:
-        output = []
-        with FlowSession(emit=output.append) as session:
-            for spec in REPRESENTATIVE_FLOW:
-                session.process(flow_packet(*spec))
+    def test_feature_extraction_preserves_cic_values(self) -> None:
+        table = FlowTable()
+        completed = []
+        for spec in REPRESENTATIVE_FLOW:
+            completed.extend(
+                table.accept(PacketRecord.from_packet(flow_packet(*spec)))
+            )
+        completed.extend(table.close())
 
-        flow = output[0]
+        flow = extract_features(completed[0]).features
         self.assertEqual(flow["tot_fwd_pkts"], 10)
         self.assertEqual(flow["tot_bwd_pkts"], 6)
         self.assertEqual(flow["init_fwd_win_byts"], 1000)
@@ -112,9 +119,57 @@ class FlowFeatureTests(unittest.TestCase):
         self.assertAlmostEqual(flow["active_max"], 1_100_000)
         self.assertAlmostEqual(flow["active_min"], 300_000)
         self.assertAlmostEqual(flow["idle_mean"], 5_900_000)
+        for field in (
+            "totlen_fwd_pkts",
+            "totlen_bwd_pkts",
+            "fwd_pkt_len_max",
+            "fwd_pkt_len_min",
+            "bwd_pkt_len_max",
+            "bwd_pkt_len_min",
+            "pkt_len_max",
+            "pkt_len_min",
+        ):
+            self.assertIsInstance(flow[field], int)
+
+    def test_expired_reverse_packet_starts_a_new_forward_flow(self) -> None:
+        table = FlowTable(expired_update=1)
+        table.accept(PacketRecord.from_packet(flow_packet(0)))
+
+        expired = table.accept(
+            PacketRecord.from_packet(flow_packet(2, reverse=True))
+        )
+        next_flow = extract_features(table.close()[0])
+
+        self.assertEqual(len(expired), 1)
+        self.assertEqual(next_flow.key.src_ip, "10.0.0.2")
+        self.assertEqual(next_flow.features["tot_fwd_pkts"], 1)
 
 
 class CliTests(unittest.TestCase):
+    def test_finish_drains_a_full_packet_handoff(self) -> None:
+        with TemporaryDirectory() as directory:
+            pcap_path = Path(directory) / "backlog.pcap"
+            wrpcap(
+                str(pcap_path),
+                [flow_packet(offset / 100) for offset in range(50)],
+            )
+            stream = _FlowStream(PcapSource(pcap_path))
+            stream.start()
+
+            deadline = time.monotonic() + 1
+            while not stream._packets.full() and time.monotonic() < deadline:
+                time.sleep(0.001)
+            self.assertTrue(stream._packets.full())
+
+            flows = stream.finish()
+            captured_packets = stream._sniffer.count
+
+        emitted_packets = sum(
+            flow.features["tot_fwd_pkts"] + flow.features["tot_bwd_pkts"]
+            for flow in flows
+        )
+        self.assertEqual(emitted_packets, captured_packets)
+
     def test_replay_projects_requested_csv_fields(self) -> None:
         with TemporaryDirectory() as directory:
             pcap_path = Path(directory) / "flow.pcap"

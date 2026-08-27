@@ -1,7 +1,11 @@
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from . import constants
-from .features.context import PacketDirection
+from .flow import PacketDirection
+
+if TYPE_CHECKING:
+    from .flow import CompletedFlow
 
 
 @dataclass(slots=True)
@@ -20,14 +24,9 @@ class DirectionBulk:
 
 
 @dataclass(frozen=True, slots=True)
-class BulkSnapshot:
+class BulkMetrics:
     forward: DirectionBulk
     reverse: DirectionBulk
-
-    def for_direction(self, direction: PacketDirection) -> DirectionBulk:
-        if direction is PacketDirection.FORWARD:
-            return self.forward
-        return self.reverse
 
 
 class _DirectionBulk:
@@ -79,7 +78,7 @@ class _DirectionBulk:
         candidate.latest = timestamp
         self.latest = timestamp
 
-    def snapshot(self) -> DirectionBulk:
+    def metrics(self) -> DirectionBulk:
         return DirectionBulk(
             bytes_per_bulk=(self.size / self.bulks if self.bulks else 0),
             packets_per_bulk=(self.packets / self.bulks if self.bulks else 0),
@@ -87,7 +86,7 @@ class _DirectionBulk:
         )
 
 
-class BulkTracker:
+class _BulkAccumulator:
     __slots__ = ("_forward", "_reverse")
 
     def __init__(self) -> None:
@@ -109,15 +108,29 @@ class BulkTracker:
         )
         current.observe(payload_size, timestamp, interrupted)
 
-    def snapshot(self) -> BulkSnapshot:
-        return BulkSnapshot(
-            forward=self._forward.snapshot(),
-            reverse=self._reverse.snapshot(),
+    def metrics(self) -> BulkMetrics:
+        return BulkMetrics(
+            forward=self._forward.metrics(),
+            reverse=self._reverse.metrics(),
         )
 
     def _directions(
         self, direction: PacketDirection
     ) -> tuple[_DirectionBulk, _DirectionBulk]:
-        if direction is PacketDirection.FORWARD:
-            return self._forward, self._reverse
-        return self._reverse, self._forward
+        match direction:
+            case "forward":
+                return self._forward, self._reverse
+            case "reverse":
+                return self._reverse, self._forward
+
+
+def bulk_metrics(flow: "CompletedFlow") -> BulkMetrics:
+    accumulator = _BulkAccumulator()
+    for packet in flow.packets:
+        if packet.payload_length:
+            accumulator.observe(
+                packet.direction,
+                packet.payload_length,
+                packet.timestamp,
+            )
+    return accumulator.metrics()

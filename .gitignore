@@ -3,3 +3,4 @@ context/
 models/
 training-data/
 .venv/
+/flows.db*

@@ -1,8 +1,43 @@
 from collections.abc import Mapping
-from typing import TypeAlias
+from dataclasses import dataclass
+from typing import Literal, NamedTuple, TypeAlias
 
-FlowValue: TypeAlias = str | int | float
-FlowData: TypeAlias = Mapping[str, FlowValue]
+Transport = Literal["TCP", "UDP"]
+
+
+class FlowKey(NamedTuple):
+    transport: Transport
+    src_ip: str
+    dst_ip: str
+    src_port: int
+    dst_port: int
+
+    @property
+    def protocol(self) -> int:
+        if self.transport == "TCP":
+            return 6
+        return 17
+
+    def reverse(self) -> "FlowKey":
+        return FlowKey(
+            self.transport,
+            self.dst_ip,
+            self.src_ip,
+            self.dst_port,
+            self.src_port,
+        )
+
+
+FeatureValue: TypeAlias = int | float
+Features: TypeAlias = Mapping[str, FeatureValue]
+
+
+@dataclass(frozen=True, slots=True)
+class Flow:
+    key: FlowKey
+    captured_at: float
+    features: Features
+
 
 FEATURE_ALIASES = (
     ("fwd_seg_size_avg", "fwd_pkt_len_mean"),
