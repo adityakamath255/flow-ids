@@ -7,6 +7,9 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Protocol, TypeAlias
 
+# importing the layer modules registers the dissectors the sniffer needs to
+# decode Ethernet and IP; without them every packet parses as Raw
+import scapy.layers.inet  # noqa: F401
 from scapy.error import Scapy_Exception
 from scapy.packet import Packet
 from scapy.sendrecv import AsyncSniffer

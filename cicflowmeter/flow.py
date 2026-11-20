@@ -1,8 +1,7 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from scapy.layers.inet import IP
-from scapy.packet import Packet
+from scapy.packet import Packet, Padding
 
 from .constants import EXPIRED_UPDATE, FLOW_DURATION_TIMEOUT, PACKETS_PER_GC
 from .schema import FlowKey
@@ -29,8 +28,9 @@ def packet_flow_key(packet: Packet) -> FlowKey:
 
 @dataclass(frozen=True, slots=True)
 class PacketValues:
+    # CIC-IDS2017 measures packet lengths as transport payload bytes and
+    # header lengths as TCP or UDP header bytes.
     timestamp: float
-    length: int
     header_length: int
     payload_length: int
     tcp_flags: int
@@ -49,13 +49,18 @@ class PacketRecord(PacketValues):
     @classmethod
     def from_packet(cls, packet: Packet) -> "PacketRecord":
         key = packet_flow_key(packet)
+        transport = packet[key.transport]
         tcp = packet["TCP"] if "TCP" in packet else None
+        # scapy parses Ethernet frame padding as part of the transport payload
+        padding = packet.getlayer(Padding)
+        payload_length = len(transport.payload) - (
+            len(padding) if padding is not None else 0
+        )
         return cls(
             key=key,
             timestamp=float(packet.time),
-            length=len(packet),
-            header_length=(packet[IP].ihl or 5) * 4,
-            payload_length=len(packet[key.transport].payload),
+            header_length=len(transport) - len(transport.payload),
+            payload_length=payload_length,
             tcp_flags=int(tcp.flags) if tcp is not None else 0,
             tcp_window=int(tcp.window or 0) if tcp is not None else None,
         )
@@ -63,7 +68,6 @@ class PacketRecord(PacketValues):
     def for_flow(self, direction: PacketDirection) -> FlowPacket:
         return FlowPacket(
             timestamp=self.timestamp,
-            length=self.length,
             header_length=self.header_length,
             payload_length=self.payload_length,
             tcp_flags=self.tcp_flags,

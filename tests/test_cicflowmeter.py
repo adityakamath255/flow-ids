@@ -1,11 +1,14 @@
 import csv
+import subprocess
+import sys
 import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from scapy.layers.inet import IP, TCP, UDP
-from scapy.packet import Raw
+from scapy.layers.l2 import Ether
+from scapy.packet import Padding, Raw
 from scapy.utils import wrpcap
 
 from cicflowmeter.capture import PcapSource, _FlowStream
@@ -95,6 +98,37 @@ class FlowFeatureTests(unittest.TestCase):
 
         self.assertEqual(len(completed), 1)
 
+    def test_lengths_count_transport_payload_and_headers(self) -> None:
+        client = Ether(src="02:00:00:00:00:01", dst="02:00:00:00:00:02") / IP(
+            src="10.0.0.1", dst="10.0.0.2"
+        )
+        server = Ether(src="02:00:00:00:00:02", dst="02:00:00:00:00:01") / IP(
+            src="10.0.0.2", dst="10.0.0.1"
+        )
+        frames = (
+            client
+            / TCP(sport=1234, dport=80, flags="S", options=[("MSS", 1460)] * 5),
+            server / TCP(sport=80, dport=1234, flags="SA"),
+            client / TCP(sport=1234, dport=80, flags="A") / Padding(b"\0" * 6),
+            client / TCP(sport=1234, dport=80, flags="PA") / Raw(b"x" * 100),
+        )
+        table = FlowTable()
+        for offset, frame in enumerate(frames):
+            packet = Ether(bytes(frame))
+            packet.time = 1000 + offset
+            table.accept(PacketRecord.from_packet(packet))
+
+        flow = extract_features(table.close()[0]).features
+
+        self.assertEqual(flow["fwd_pkt_len_max"], 100)
+        self.assertEqual(flow["fwd_pkt_len_min"], 0)
+        self.assertEqual(flow["totlen_fwd_pkts"], 100)
+        self.assertEqual(flow["bwd_pkt_len_max"], 0)
+        self.assertEqual(flow["fwd_header_len"], 40 + 20 + 20)
+        self.assertEqual(flow["bwd_header_len"], 20)
+        self.assertEqual(flow["fwd_seg_size_min"], 20)
+        self.assertEqual(flow["fwd_act_data_pkts"], 1)
+
     def test_feature_extraction_preserves_cic_values(self) -> None:
         table = FlowTable()
         completed = []
@@ -169,6 +203,33 @@ class CliTests(unittest.TestCase):
             for flow in flows
         )
         self.assertEqual(emitted_packets, captured_packets)
+
+    def test_fresh_process_decodes_ethernet_capture(self) -> None:
+        # a fresh interpreter, because this module's imports already register
+        # scapy's Ethernet dissector
+        with TemporaryDirectory() as directory:
+            pcap_path = Path(directory) / "ethernet.pcap"
+            csv_path = Path(directory) / "flows.csv"
+            frame = Ether(src="02:00:00:00:00:01", dst="02:00:00:00:00:02")
+            wrpcap(str(pcap_path), [frame / flow_packet(0, flags="S")])
+
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "cicflowmeter.cli",
+                    "--file",
+                    str(pcap_path),
+                    "--fields",
+                    "dst_port",
+                    str(csv_path),
+                ],
+                check=True,
+                cwd=Path(__file__).resolve().parent.parent,
+            )
+            rows = csv_path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(rows, ["dst_port", "80"])
 
     def test_replay_projects_requested_csv_fields(self) -> None:
         with TemporaryDirectory() as directory:

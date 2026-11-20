@@ -131,9 +131,9 @@ def extract_features(flow: CompletedFlow) -> Flow:
     forward = _direction(flow, "forward")
     reverse = _direction(flow, "reverse")
 
-    lengths = _statistics(packet.length for packet in packets)
-    forward_lengths = _statistics(packet.length for packet in forward)
-    reverse_lengths = _statistics(packet.length for packet in reverse)
+    lengths = _statistics(packet.payload_length for packet in packets)
+    forward_lengths = _statistics(packet.payload_length for packet in forward)
+    reverse_lengths = _statistics(packet.payload_length for packet in reverse)
     flow_iat = _statistics(
         _flow_interarrival_times(packets),
         MICROSECONDS_PER_SECOND,
