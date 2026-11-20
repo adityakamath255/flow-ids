@@ -67,28 +67,31 @@ class _FlowStream:
             if isinstance(source, InterfaceSource)
             else None
         )
-        self._started = False
         self._closed = False
 
     def start(self) -> None:
         self._sniffer.start()
-        self._started = True
 
     def finish(self) -> tuple[Flow, ...]:
+        """Stop capture and return every flow not yet emitted.
+
+        Safe to call more than once; later calls return ().
+        """
         if self._closed:
             return ()
         self._closed = True
         completed: list[CompletedFlow] = []
         try:
-            if self._started:
-                self._stop_sniffer()
-                while self._sniffer.running:
-                    try:
-                        packet = self._packets.get(timeout=FLOW_POLL_TIMEOUT)
-                    except Empty:
-                        continue
-                    completed.extend(self._record(packet))
-                self._sniffer.join()
+            self._stop_sniffer()
+            # the sniffer may be blocked handing off a packet, so keep
+            # draining until its thread exits
+            while self._sniffer.running:
+                try:
+                    packet = self._packets.get(timeout=FLOW_POLL_TIMEOUT)
+                except Empty:
+                    continue
+                completed.extend(self._record(packet))
+            self._sniffer.join()
         finally:
             while True:
                 try:
@@ -109,19 +112,15 @@ class _FlowStream:
                 raise
 
     def __iter__(self) -> Iterator[Flow]:
-        try:
-            while not self._closed:
-                try:
-                    packet = self._packets.get(timeout=FLOW_POLL_TIMEOUT)
-                except Empty:
-                    if not self._sniffer.running:
-                        yield from self.finish()
-                else:
-                    yield from self._accept(packet)
-                yield from self._expire()
-        except KeyboardInterrupt:
-            yield from self.finish()
-            raise
+        while True:
+            try:
+                packet = self._packets.get(timeout=FLOW_POLL_TIMEOUT)
+            except Empty:
+                if not self._sniffer.running:
+                    break
+            else:
+                yield from self._accept(packet)
+            yield from self._expire()
         yield from self.finish()
 
     def _accept(self, packet: Packet) -> tuple[Flow, ...]:
@@ -172,8 +171,8 @@ def _create_sniffer(
 @contextmanager
 def open_flows(source: CaptureSource) -> Iterator[FlowStream]:
     stream = _FlowStream(source)
+    stream.start()
     try:
-        stream.start()
         yield stream
     finally:
         stream.finish()

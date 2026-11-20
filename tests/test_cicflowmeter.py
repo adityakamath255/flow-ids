@@ -234,6 +234,36 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(emitted_packets, captured_packets)
 
+    def test_finish_after_interrupted_iteration_loses_no_packets(self) -> None:
+        with TemporaryDirectory() as directory:
+            pcap_path = Path(directory) / "flows.pcap"
+            wrpcap(
+                str(pcap_path),
+                [
+                    flow_packet(offset / 100, flags="S", window=1000 + offset)
+                    for offset in range(50)
+                ],
+            )
+
+            flows: list = []
+            with (
+                patch.object(
+                    _FlowStream, "_expire", side_effect=KeyboardInterrupt
+                ),
+                open_flows(PcapSource(pcap_path)) as stream,
+            ):
+                try:
+                    flows.extend(stream)
+                except KeyboardInterrupt:
+                    flows.extend(stream.finish())
+                captured_packets = stream._sniffer.count  # type: ignore[attr-defined]
+
+        emitted_packets = sum(
+            defined(flow.features["tot_fwd_pkts"]) for flow in flows
+        )
+        self.assertGreater(captured_packets, 0)
+        self.assertEqual(emitted_packets, captured_packets)
+
     def test_flow_table_errors_propagate(self) -> None:
         with TemporaryDirectory() as directory:
             pcap_path = Path(directory) / "flow.pcap"
