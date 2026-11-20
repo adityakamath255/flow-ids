@@ -27,7 +27,9 @@ class Classifier:
 
     @classmethod
     def load(cls, path: Path) -> "Classifier":
-        model = XGBClassifier()
+        # one-row predictions are several times slower on xgboost's default
+        # thread pool, which also competes with the capture thread
+        model = XGBClassifier(n_jobs=1)
         model.load_model(path)
         encoded_classes = cast(
             str,

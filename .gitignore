@@ -1,5 +1,5 @@
 *.pyc
-context/
+/demo/
 models/
 training-data/
 .venv/
