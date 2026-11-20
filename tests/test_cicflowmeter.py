@@ -5,13 +5,15 @@ import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-from scapy.layers.inet import IP, TCP, UDP
+from scapy.layers.inet import ICMP, IP, TCP, UDP
+from scapy.layers.inet6 import IPv6
 from scapy.layers.l2 import Ether
-from scapy.packet import Padding, Raw
+from scapy.packet import Packet, Padding, Raw
 from scapy.utils import wrpcap
 
-from cicflowmeter.capture import PcapSource, _FlowStream
+from cicflowmeter.capture import PcapSource, _FlowStream, open_flows
 from cicflowmeter.cli import parse_args, run
 from cicflowmeter.feature_extraction import extract_features
 from cicflowmeter.flow import FlowTable, PacketRecord, packet_flow_key
@@ -35,6 +37,12 @@ REPRESENTATIVE_FLOW = (
     (7.2, True, "FA", 2000, 0),
     (7.3, False, "A", 1000, 0),
 )
+
+
+def record(packet: Packet) -> PacketRecord:
+    parsed = PacketRecord.from_packet(packet)
+    assert parsed is not None
+    return parsed
 
 
 def defined(value: FeatureValue) -> float:
@@ -82,25 +90,30 @@ class FlowIdentityTests(unittest.TestCase):
 
         tcp_key = packet_flow_key(tcp)
         udp_key = packet_flow_key(udp)
+        assert tcp_key is not None
 
         self.assertNotEqual(tcp_key, udp_key)
         self.assertEqual(tcp_key.reverse().reverse(), tcp_key)
+
+    def test_only_ipv4_tcp_and_udp_are_parsed(self) -> None:
+        self.assertIsNone(PacketRecord.from_packet(IPv6() / TCP()))
+        self.assertIsNone(PacketRecord.from_packet(IP() / ICMP()))
 
 
 class FlowFeatureTests(unittest.TestCase):
     def test_flow_closes_after_both_fins_and_final_ack(self) -> None:
         table = FlowTable()
 
-        table.accept(PacketRecord.from_packet(flow_packet(0, flags="S")))
-        table.accept(PacketRecord.from_packet(flow_packet(0.1, flags="FA")))
+        table.accept(record(flow_packet(0, flags="S")))
+        table.accept(record(flow_packet(0.1, flags="FA")))
         completed = table.accept(
-            PacketRecord.from_packet(
+            record(
                 flow_packet(0.2, reverse=True, flags="FA")
             )
         )
         self.assertEqual(completed, ())
 
-        completed = table.accept(PacketRecord.from_packet(flow_packet(0.3)))
+        completed = table.accept(record(flow_packet(0.3)))
 
         self.assertEqual(len(completed), 1)
 
@@ -122,7 +135,7 @@ class FlowFeatureTests(unittest.TestCase):
         for offset, frame in enumerate(frames):
             packet = Ether(bytes(frame))
             packet.time = 1000 + offset
-            table.accept(PacketRecord.from_packet(packet))
+            table.accept(record(packet))
 
         flow = extract_features(table.close()[0]).features
 
@@ -137,7 +150,7 @@ class FlowFeatureTests(unittest.TestCase):
 
     def test_zero_duration_flow_rates_are_undefined(self) -> None:
         table = FlowTable()
-        table.accept(PacketRecord.from_packet(flow_packet(0, flags="S")))
+        table.accept(record(flow_packet(0, flags="S")))
 
         flow = extract_features(table.close()[0]).features
 
@@ -150,7 +163,7 @@ class FlowFeatureTests(unittest.TestCase):
         completed = []
         for spec in REPRESENTATIVE_FLOW:
             completed.extend(
-                table.accept(PacketRecord.from_packet(flow_packet(*spec)))
+                table.accept(record(flow_packet(*spec)))
             )
         completed.extend(table.close())
 
@@ -183,10 +196,10 @@ class FlowFeatureTests(unittest.TestCase):
 
     def test_expired_reverse_packet_starts_a_new_forward_flow(self) -> None:
         table = FlowTable(expired_update=1)
-        table.accept(PacketRecord.from_packet(flow_packet(0)))
+        table.accept(record(flow_packet(0)))
 
         expired = table.accept(
-            PacketRecord.from_packet(flow_packet(2, reverse=True))
+            record(flow_packet(2, reverse=True))
         )
         next_flow = extract_features(table.close()[0])
 
@@ -220,6 +233,18 @@ class CliTests(unittest.TestCase):
             for flow in flows
         )
         self.assertEqual(emitted_packets, captured_packets)
+
+    def test_flow_table_errors_propagate(self) -> None:
+        with TemporaryDirectory() as directory:
+            pcap_path = Path(directory) / "flow.pcap"
+            wrpcap(str(pcap_path), [flow_packet(0, flags="S")])
+
+            with (
+                patch.object(FlowTable, "accept", side_effect=KeyError("bug")),
+                open_flows(PcapSource(pcap_path)) as flows,
+                self.assertRaises(KeyError),
+            ):
+                list(flows)
 
     def test_fresh_process_decodes_ethernet_capture(self) -> None:
         # a fresh interpreter, because this module's imports already register

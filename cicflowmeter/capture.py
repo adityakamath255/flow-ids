@@ -128,13 +128,14 @@ class _FlowStream:
         return self._project(self._record(packet))
 
     def _record(self, packet: Packet) -> tuple[CompletedFlow, ...]:
-        if "TCP" not in packet and "UDP" not in packet:
-            return ()
         try:
-            return self._flows.accept(PacketRecord.from_packet(packet))
+            record = PacketRecord.from_packet(packet)
         except _PACKET_ERRORS:
             LOGGER.debug("Ignored malformed packet", exc_info=True)
             return ()
+        if record is None:
+            return ()
+        return self._flows.accept(record)
 
     def _expire(self) -> tuple[Flow, ...]:
         if self._next_gc is None:

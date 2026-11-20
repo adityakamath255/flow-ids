@@ -9,13 +9,16 @@ from .schema import FlowKey
 PacketDirection = Literal["forward", "reverse"]
 
 
-def packet_flow_key(packet: Packet) -> FlowKey:
+def packet_flow_key(packet: Packet) -> FlowKey | None:
+    """Return None for packets other than TCP or UDP over IPv4."""
+    if "IP" not in packet:
+        return None
     if "TCP" in packet:
         transport = "TCP"
     elif "UDP" in packet:
         transport = "UDP"
     else:
-        raise ValueError("Only TCP and UDP packets are supported")
+        return None
 
     return FlowKey(
         transport,
@@ -47,8 +50,11 @@ class PacketRecord(PacketValues):
     key: FlowKey
 
     @classmethod
-    def from_packet(cls, packet: Packet) -> "PacketRecord":
+    def from_packet(cls, packet: Packet) -> "PacketRecord | None":
+        """Return None for packets other than TCP or UDP over IPv4."""
         key = packet_flow_key(packet)
+        if key is None:
+            return None
         transport = packet[key.transport]
         tcp = packet["TCP"] if "TCP" in packet else None
         # scapy parses Ethernet frame padding as part of the transport payload
