@@ -25,6 +25,24 @@ class TrainingDataTests(unittest.TestCase):
         self.assertEqual(features.columns.tolist(), ["flow_duration"])
         self.assertTrue(np.isnan(features.iloc[1, 0]))
 
+    def test_prepare_removes_rows_duplicated_after_dropping_features(
+        self,
+    ) -> None:
+        columns = {
+            "Label": ["PortScan", "PortScan", "Bot", "BENIGN"],
+            "flow_duration": [1.0, 1.0, 1.0, 1.0],
+        }
+        columns.update(
+            {feature: [0, 0, 0, 0] for feature in train.DROP_FEATURES}
+        )
+        columns["dst_port"] = [22, 80, 443, 443]
+        frame = pd.DataFrame(columns)
+
+        features, labels = train.prepare(frame)
+
+        self.assertEqual(labels.tolist(), ["RECON", "BENIGN"])
+        self.assertEqual(features["flow_duration"].tolist(), [1.0, 1.0])
+
     def test_prepare_rejects_an_incomplete_schema(self) -> None:
         frame = pd.DataFrame({"Label": ["BENIGN"], "flow_duration": [1.0]})
 

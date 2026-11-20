@@ -75,8 +75,6 @@ def load_data() -> pd.DataFrame:
 
 
 def prepare(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
-    df = df.drop_duplicates()
-
     label_to_group = {
         cls: group
         for group, classes in CLASS_GROUPS.items()
@@ -90,7 +88,11 @@ def prepare(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
         .drop(columns=["Label", *DROP_FEATURES])
         .replace([np.inf, -np.inf], np.nan)
     )
-    return X, y[grouped]
+    y = y[grouped]
+    # deduplicate only after dropping columns and grouping labels; rows that
+    # differed only in removed information would otherwise reach both splits
+    unique = ~X.assign(Label=y).duplicated()
+    return X[unique], y[unique]
 
 
 def train(X: pd.DataFrame, y: np.ndarray) -> xgb.XGBClassifier:

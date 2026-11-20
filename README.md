@@ -100,7 +100,7 @@ Training uses the [CIC-IDS2017](https://www.unb.ca/cic/datasets/ids-2017.html) m
 uv run python3 train.py
 ```
 
-[`train.py`](train.py) strips column whitespace, maps dataset names to extractor feature names, removes duplicate rows, discards unsupported labels, drops configured topology, duplicate, and unpopulated columns, and changes infinite values to missing values. It makes a stratified 80/20 split and trains XGBoost with balanced sample weights.
+[`train.py`](train.py) strips column whitespace, maps dataset names to extractor feature names, discards unsupported labels, drops configured topology, duplicate, and unpopulated columns, changes infinite values to missing values, and then removes duplicate rows. Deduplicating after the column drop keeps rows that differed only in dropped columns from appearing in both the training and test splits. It makes a stratified 80/20 split and trains XGBoost with balanced sample weights.
 
 The script prints classification reports for the training and test splits, then atomically writes `models/model.json`. The model stores its feature order and ordered class names, so inference does not depend on a separate encoder or metadata file.
 
@@ -121,7 +121,7 @@ The tests cover flow identity and termination, feature values, capture shutdown,
 - Live capture can lose packets if flow processing cannot keep up with the network source.
 - Features accumulate until a flow completes, so a high-volume flow can retain many packet records for up to its timeout.
 - The dashboard reports classifications but provides no authentication, notification, or response mechanism.
-- The feature extractor is tested against representative CICFlowMeter values, not every possible flow shape in CIC-IDS2017.
+- The extractor does not reproduce several CICFlowMeter quirks present in CIC-IDS2017: its flag counts, its overall packet-length statistics (which count the first packet twice), its active times, and its counting of Ethernet padding as payload. The model therefore sees different values at inference than in training, and it labels traffic that resembles a CIC-IDS2017 port scan as `BENIGN`.
 
 ## License
 
