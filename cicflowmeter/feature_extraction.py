@@ -4,19 +4,22 @@ from typing import NamedTuple
 
 from . import constants
 from .bulk import bulk_metrics
-from .flow import CompletedFlow, FlowPacket, PacketDirection
+from .flow import (
+    ACK,
+    CWR,
+    ECE,
+    FIN,
+    PSH,
+    RST,
+    SYN,
+    URG,
+    CompletedFlow,
+    FlowPacket,
+    PacketDirection,
+)
 from .schema import FEATURE_ALIASES, Flow
 
 MICROSECONDS_PER_SECOND = 1_000_000
-
-FIN = 0x01
-SYN = 0x02
-RST = 0x04
-PSH = 0x08
-ACK = 0x10
-URG = 0x20
-ECE = 0x40
-CWR = 0x80
 
 
 class _Statistics(NamedTuple):

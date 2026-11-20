@@ -8,6 +8,15 @@ from .schema import FlowKey
 
 PacketDirection = Literal["forward", "reverse"]
 
+FIN = 0x01
+SYN = 0x02
+RST = 0x04
+PSH = 0x08
+ACK = 0x10
+URG = 0x20
+ECE = 0x40
+CWR = 0x80
+
 
 def packet_flow_key(packet: Packet) -> FlowKey | None:
     """Return None for packets other than TCP or UDP over IPv4."""
@@ -86,11 +95,7 @@ class PacketRecord(PacketValues):
 class CompletedFlow:
     key: FlowKey
     packets: tuple[FlowPacket, ...]
-
-    @property
-    def duration(self) -> float:
-        start = self.packets[0].timestamp
-        return max(packet.timestamp for packet in self.packets) - start
+    duration: float
 
 
 class _Flow:
@@ -126,21 +131,21 @@ class _Flow:
         self._observe_termination(flow_packet)
 
     def complete(self) -> CompletedFlow:
-        return CompletedFlow(self.key, tuple(self._packets))
+        return CompletedFlow(self.key, tuple(self._packets), self.duration)
 
     def _observe_termination(self, packet: FlowPacket) -> None:
         if self._ended:
             return
-        if packet.tcp_flags & 0x04:
+        if packet.tcp_flags & RST:
             self._ended = True
             return
-        if packet.tcp_flags & 0x01:
+        if packet.tcp_flags & FIN:
             if packet.direction == "forward":
                 self._forward_fin = True
             else:
                 self._reverse_fin = True
             return
-        if packet.tcp_flags & 0x10 and self._forward_fin and self._reverse_fin:
+        if packet.tcp_flags & ACK and self._forward_fin and self._reverse_fin:
             self._ended = True
 
     @property
