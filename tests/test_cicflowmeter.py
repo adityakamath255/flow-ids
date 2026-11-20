@@ -15,6 +15,7 @@ from cicflowmeter.capture import PcapSource, _FlowStream
 from cicflowmeter.cli import parse_args, run
 from cicflowmeter.feature_extraction import extract_features
 from cicflowmeter.flow import FlowTable, PacketRecord, packet_flow_key
+from cicflowmeter.schema import FeatureValue
 
 REPRESENTATIVE_FLOW = (
     (0.0, False, "S", 1000, 0),
@@ -34,6 +35,11 @@ REPRESENTATIVE_FLOW = (
     (7.2, True, "FA", 2000, 0),
     (7.3, False, "A", 1000, 0),
 )
+
+
+def defined(value: FeatureValue) -> float:
+    assert value is not None
+    return value
 
 
 def flow_packet(
@@ -129,6 +135,16 @@ class FlowFeatureTests(unittest.TestCase):
         self.assertEqual(flow["fwd_seg_size_min"], 20)
         self.assertEqual(flow["fwd_act_data_pkts"], 1)
 
+    def test_zero_duration_flow_rates_are_undefined(self) -> None:
+        table = FlowTable()
+        table.accept(PacketRecord.from_packet(flow_packet(0, flags="S")))
+
+        flow = extract_features(table.close()[0]).features
+
+        self.assertIsNone(flow["flow_byts_s"])
+        self.assertIsNone(flow["flow_pkts_s"])
+        self.assertEqual(flow["fwd_pkts_s"], 0)
+
     def test_feature_extraction_preserves_cic_values(self) -> None:
         table = FlowTable()
         completed = []
@@ -148,11 +164,11 @@ class FlowFeatureTests(unittest.TestCase):
         self.assertEqual(flow["fwd_pkts_b_avg"], 5)
         self.assertEqual(flow["bwd_byts_b_avg"], 30)
         self.assertEqual(flow["bwd_pkts_b_avg"], 4)
-        self.assertAlmostEqual(flow["fwd_blk_rate_avg"], 37.5)
-        self.assertAlmostEqual(flow["bwd_blk_rate_avg"], 100)
-        self.assertAlmostEqual(flow["active_max"], 1_100_000)
-        self.assertAlmostEqual(flow["active_min"], 300_000)
-        self.assertAlmostEqual(flow["idle_mean"], 5_900_000)
+        self.assertAlmostEqual(defined(flow["fwd_blk_rate_avg"]), 37.5)
+        self.assertAlmostEqual(defined(flow["bwd_blk_rate_avg"]), 100)
+        self.assertAlmostEqual(defined(flow["active_max"]), 1_100_000)
+        self.assertAlmostEqual(defined(flow["active_min"]), 300_000)
+        self.assertAlmostEqual(defined(flow["idle_mean"]), 5_900_000)
         for field in (
             "totlen_fwd_pkts",
             "totlen_bwd_pkts",
@@ -199,7 +215,8 @@ class CliTests(unittest.TestCase):
             captured_packets = stream._sniffer.count
 
         emitted_packets = sum(
-            flow.features["tot_fwd_pkts"] + flow.features["tot_bwd_pkts"]
+            defined(flow.features["tot_fwd_pkts"])
+            + defined(flow.features["tot_bwd_pkts"])
             for flow in flows
         )
         self.assertEqual(emitted_packets, captured_packets)

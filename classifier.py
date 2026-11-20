@@ -57,11 +57,13 @@ class Classifier:
 
     def classify(self, features: Features) -> dict[str, float]:
         values = np.array(
-            [features[name] for name in self._features],
+            [
+                np.nan if features[name] is None else features[name]
+                for name in self._features
+            ],
             dtype=np.float64,
         )
-        cleaned = np.where(np.isinf(values), np.nan, values)
-        probabilities = self._model.predict_proba(cleaned.reshape(1, -1))[0]
+        probabilities = self._model.predict_proba(values.reshape(1, -1))[0]
         return {
             label: float(probability)
             for label, probability in zip(

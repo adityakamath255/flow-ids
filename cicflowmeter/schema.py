@@ -28,7 +28,9 @@ class FlowKey(NamedTuple):
         )
 
 
-FeatureValue: TypeAlias = int | float
+# None marks a value CIC-IDS2017 leaves undefined, such as a rate over zero
+# duration
+FeatureValue: TypeAlias = int | float | None
 Features: TypeAlias = Mapping[str, FeatureValue]
 
 

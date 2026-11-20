@@ -11,7 +11,7 @@ from typing import TypeAlias
 from .capture import CaptureSource, InterfaceSource, PcapSource, open_flows
 from .schema import Flow
 
-CsvValue: TypeAlias = str | int | float
+CsvValue: TypeAlias = str | int | float | None
 CsvRow: TypeAlias = dict[str, CsvValue]
 
 

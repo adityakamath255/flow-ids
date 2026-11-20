@@ -156,8 +156,10 @@ def extract_features(flow: CompletedFlow) -> Flow:
 
     data = {
         "flow_duration": duration * MICROSECONDS_PER_SECOND,
-        "flow_byts_s": lengths.total / duration if duration else 0,
-        "flow_pkts_s": len(packets) / duration if duration else 0,
+        # CIC-IDS2017 leaves these two undefined over zero duration but
+        # reports 0 for the per-direction rates
+        "flow_byts_s": lengths.total / duration if duration else None,
+        "flow_pkts_s": len(packets) / duration if duration else None,
         "fwd_pkts_s": len(forward) / duration if duration else 0,
         "bwd_pkts_s": len(reverse) / duration if duration else 0,
         "tot_fwd_pkts": len(forward),
