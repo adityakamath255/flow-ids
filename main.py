@@ -9,7 +9,7 @@ from cicflowmeter.capture import (
     PcapSource,
     open_flows,
 )
-from classifier import Classifier
+from classifier import DEFAULT_MODEL_PATH, Classifier
 from flow_database import open_flow_store
 
 
@@ -28,7 +28,7 @@ def parse_args(argv: Sequence[str] | None = None) -> Config:
     parser.add_argument(
         "-m",
         "--model",
-        default=Path("models/model.json"),
+        default=DEFAULT_MODEL_PATH,
         type=Path,
         help="Trained model path",
     )

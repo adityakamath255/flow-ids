@@ -9,6 +9,7 @@ from xgboost import XGBClassifier
 
 from cicflowmeter.schema import Features
 
+DEFAULT_MODEL_PATH = Path(__file__).resolve().parent / "models" / "model.json"
 _CLASSES_ATTRIBUTE = "flow_ids_classes"
 
 

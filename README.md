@@ -76,7 +76,7 @@ Detector options:
 ```text
 -i, --interface     live capture interface, mutually exclusive with --pcap
 -p, --pcap          pcap file to replay, mutually exclusive with --interface
--m, --model         model path, default: models/model.json
+-m, --model         model path, default: models/model.json in the project directory
 -d, --db            SQLite path, default: flows.db
 ```
 

@@ -12,11 +12,10 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn.utils.class_weight import compute_sample_weight
 
 from cicflowmeter.schema import CIC_IDS_2017_COLUMNS
-from classifier import Classifier
+from classifier import DEFAULT_MODEL_PATH, Classifier
 
 HERE = Path(__file__).resolve().parent
 DATASET_DIR = HERE / "training-data/MachineLearningCVE"
-MODEL_PATH = HERE / "models/model.json"
 RANDOM_STATE = 42
 TEST_SIZE = 0.2
 
@@ -157,7 +156,7 @@ def main() -> None:
     )
 
     log("Saving model...")
-    Classifier(model, classes).save(MODEL_PATH)
+    Classifier(model, classes).save(DEFAULT_MODEL_PATH)
     log("Done.")
 
 
